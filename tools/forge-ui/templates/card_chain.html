@@ -1,0 +1,39 @@
+{% for slot in slots %}
+<div class="card slot-card {{ slot.slot_type }}-slot {% if slot.empty %}slot-empty{% else %}slot-filled{% endif %}"
+    {% if slot.asset_id %}id="card-{{ slot.asset_id }}"{% else %}id="slot-{{ slot.slot_type }}"{% endif %}
+    data-slot-type="{{ slot.slot_type }}"
+    {% if not slot.empty %}
+    hx-get="/api/assets/partials/editor/{{ slot.asset_id }}" hx-target="#property-editor" hx-trigger="click" hx-swap="innerHTML"
+    onclick="selectCard('{{ slot.asset_id }}'); window.load_asset && window.load_asset('/api/assets/{{ slot.asset_id }}/binary', '{{ slot.asset_id }}')"
+    {% endif %}>
+    <div class="card-badge slot-badge">{{ slot.slot_type|upper }}</div>
+    {% if slot.empty %}
+    <h3 class="card-title slot-title-empty">+ {{ slot.name }}</h3>
+    <p class="card-subtitle">{{ slot.description }}</p>
+    <div class="card-footer">
+        <span class="status-pending">Empty</span>
+    </div>
+    <button type="button" class="slot-fill-btn" onclick="showLibraryPickerForSlot('{{ slot.slot_type }}')" title="Fill {{ slot.name }} slot">+</button>
+    {% else %}
+    <h3 class="card-title" title="{{ slot.name }}">{{ slot.name }}</h3>
+    <p class="card-subtitle">{{ slot.description }}</p>
+    <div class="card-footer">
+        <span class="status-cached">✓ Filled</span>
+    </div>
+    <form class="slot-clear-form" hx-post="/api/assets/chain/slot/{{ slot.slot_type }}" hx-target="#card-chain" hx-swap="innerHTML" onclick="event.stopPropagation();">
+        <button type="submit" class="slot-clear-btn" title="Clear slot">×</button>
+    </form>
+    {% endif %}
+</div>
+{% endfor %}
+
+<button class="add-card-btn-h" onclick="showLibraryPicker()" title="Add from library">+ Library</button>
+<script>
+function showLibraryPickerForSlot(slotType) {
+    window._chainTargetSlot = slotType;
+    showLibraryPicker();
+}
+function selectCard(cardId) {
+    if (typeof window.selectCard === 'function') window.selectCard(cardId);
+}
+</script>

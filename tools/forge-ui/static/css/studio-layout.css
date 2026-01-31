@@ -1,0 +1,287 @@
+/* Studio Layout - Grid structures and panel positioning */
+
+/* Shared Viewport Container - Always visible background */
+.shared-viewport-container {
+    position: fixed;
+    top: 60px; /* Below nav */
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+}
+
+.shared-viewport-container canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+/* GenAI Studio Layout - Overlay panels on top of viewport */
+.genai-studio {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: 350px 1fr 350px;
+    grid-template-areas: "genai-left genai-viewport genai-right";
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.genai-panel-left {
+    grid-area: genai-left;
+    border-right: 1px solid var(--border);
+    pointer-events: auto;
+}
+
+.genai-panel-right {
+    grid-area: genai-right;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+}
+
+/* Asset Editor Studio Layout - Overlay panels on top of viewport */
+.asset-studio {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: 280px 1fr 300px;
+    grid-template-rows: 1fr 140px;
+    grid-template-areas:
+        "hierarchy viewport properties"
+        "chain chain chain";
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* Panel Base Styles */
+.studio-panel {
+    background: var(--bg-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    pointer-events: auto;
+}
+
+.hierarchy-panel {
+    grid-area: hierarchy;
+    border-right: 1px solid var(--border);
+}
+
+.properties-panel {
+    grid-area: properties;
+    border-left: 1px solid var(--border);
+}
+
+.panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.panel-header h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.panel-content {
+    flex: 1;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+/* Viewport area in grid (transparent - shows shared viewport behind) */
+.asset-studio [style*="grid-area: viewport"],
+.genai-studio [style*="grid-area: genai-viewport"] {
+    grid-area: viewport;
+    pointer-events: none;
+}
+
+.viewport-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 16px;
+    display: flex;
+    justify-content: space-between;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.shared-viewport-container .viewport-overlay {
+    z-index: 3; /* Above viewport but below UI panels */
+}
+
+.viewport-modes {
+    display: flex;
+    gap: 4px;
+    pointer-events: auto;
+}
+
+.viewport-stats {
+    display: flex;
+    gap: 16px;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--glass-border);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-family: monospace;
+    pointer-events: auto;
+}
+
+/* Card Chain Strip - fixed height so not cut off */
+.card-chain-strip {
+    grid-area: chain;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 140px;
+    pointer-events: auto;
+}
+
+.chain-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+}
+
+.chain-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-secondary);
+}
+
+.chain-stats {
+    display: flex;
+    gap: 16px;
+    margin-left: auto;
+}
+
+.chain-actions {
+    display: flex;
+    gap: 8px;
+}
+
+/* Horizontal Card Chain Scroll */
+.chain-scroll {
+    flex: 1;
+    min-height: 88px;
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-items: stretch;
+}
+
+/* Scrollbar styling for chain */
+.chain-scroll::-webkit-scrollbar {
+    height: 6px;
+}
+
+.chain-scroll::-webkit-scrollbar-track {
+    background: var(--bg-deep);
+}
+
+.chain-scroll::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.chain-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}
+
+/* Properties panel in studio */
+.properties-panel .property-list {
+    padding: 0;
+}
+
+.properties-panel .empty-state {
+    padding: 40px 20px;
+    text-align: center;
+}
+
+/* Output Section */
+.output-section {
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 150px;
+    flex: 1;
+}
+
+.genai-panel-right .output-section {
+    max-height: none;
+}
+
+.output-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background: var(--bg-elevated);
+}
+
+.output-header h3 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.output-log {
+    flex: 1;
+    padding: 12px 16px;
+    overflow-y: auto;
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    background: var(--bg-deep);
+}
+
+/* Hierarchy section in left sidebar */
+.hierarchy-section {
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+    max-height: 220px;
+}
+
+.hierarchy-section .panel-header {
+    padding: 10px 20px;
+}
+
+.hierarchy-section .tree-panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px 16px;
+}

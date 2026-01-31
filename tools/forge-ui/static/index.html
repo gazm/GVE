@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GVE Forge - The Iron Forge</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/forms.css">
+    <link rel="stylesheet" href="/static/css/library.css">
+    <link rel="stylesheet" href="/static/css/studio-layout.css">
+    <link rel="stylesheet" href="/static/css/studio-components.css">
+    <link rel="stylesheet" href="/static/css/studio-tree.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap"
+        rel="stylesheet">
+
+</head>
+
+<body class="dark-theme">
+    <nav class="top-nav">
+        <div class="logo">
+            <span class="accent">GVE</span> Forge
+        </div>
+        <div class="nav-links">
+            <button class="nav-btn" data-page="genai" onclick="showPage('genai')">GenAI</button>
+            <button class="nav-btn" data-page="asset-editor" onclick="showPage('asset-editor')">Asset Editor</button>
+            <button class="nav-btn" data-page="world" onclick="showPage('world')">World</button>
+            <button class="nav-btn active" data-page="library" onclick="showPage('library')">Library</button>
+        </div>
+        <div class="status-indicator">
+            <span class="dot pulse"></span> Architect Online
+        </div>
+    </nav>
+
+    <!-- Shared Viewport Section (always visible) -->
+    <section class="shared-viewport-container">
+        <div class="viewport-overlay">
+            <div class="viewport-stats">
+                <span id="fps">60 FPS</span>
+                <span id="tri-count">SDF Evaluation</span>
+            </div>
+            <div class="viewport-modes">
+                <button class="mode-btn active" data-mode="sdf" title="SDF Source">◇</button>
+                <button class="mode-btn" data-mode="shell" title="Shell Mesh">△</button>
+                <button class="mode-btn" data-mode="splat" title="Splat View">●</button>
+                <button class="mode-btn" data-mode="physics" title="Physics Debug">☐</button>
+                <button class="mode-btn" onclick="clearViewportManual()" title="Clear Viewport">×</button>
+                <button class="mode-btn" onclick="openExternalViewport()" title="Open Dedicated Viewport">◳</button>
+            </div>
+        </div>
+        <canvas id="shared-viewport"></canvas>
+    </section>
+
+    <!-- Page: GenAI (AI Generation) - Side Panels Only -->
+    <main id="page-genai" class="genai-studio page" style="display: none;">
+        <!-- Left: Generation Controls -->
+        <aside class="studio-panel genai-panel-left">
+            <header class="panel-header">
+                <h2>Generate</h2>
+            </header>
+
+            <div class="panel-content">
+                <!-- Asset Type Selector -->
+                <div class="form-group">
+                    <label>Asset Type</label>
+                    <div class="type-selector">
+                        <button class="type-btn active" data-type="prop">Prop</button>
+                        <button class="type-btn" data-type="weapon">Weapon</button>
+                        <button class="type-btn" data-type="vehicle">Vehicle</button>
+                        <button class="type-btn" data-type="character">Character</button>
+                    </div>
+                </div>
+
+                <!-- Prompt Input -->
+                <div class="form-group">
+                    <label for="ai-prompt">Describe your asset</label>
+                    <textarea id="ai-prompt" class="prompt-input" rows="3"
+                        placeholder="e.g., rusty AK-47 with wooden stock"></textarea>
+                </div>
+
+                <!-- Style Options -->
+                <div class="form-group">
+                    <label>Style</label>
+                    <div class="style-chips">
+                        <button class="chip" data-style="realistic">Realistic</button>
+                        <button class="chip active" data-style="stylized">Stylized</button>
+                        <button class="chip" data-style="worn">Worn</button>
+                        <button class="chip" data-style="pristine">Pristine</button>
+                    </div>
+                </div>
+
+                <!-- Material Suggestion -->
+                <div class="form-group">
+                    <label>Suggested Materials</label>
+                    <div id="material-suggestions" class="material-chips">
+                        <span class="chip-placeholder">Enter a prompt to see suggestions...</span>
+                    </div>
+                </div>
+
+                <!-- Generate Button -->
+                <button id="btn-generate" class="btn-generate" onclick="generateAsset()">
+                    <span class="icon">⚡</span> Generate Asset
+                </button>
+
+                <!-- Cost Estimate -->
+                <div class="cost-estimate">
+                    <span class="estimate-label">Estimated:</span>
+                    <span class="estimate-cost" id="cost-estimate">$0.00</span>
+                    <span class="estimate-time">~0s</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Right: Output & Feedback -->
+        <aside class="studio-panel genai-panel-right">
+            <!-- Generation Output Log -->
+            <div class="output-section">
+                <header class="output-header">
+                    <h3>Output</h3>
+                    <button class="btn-icon-sm" title="Clear log" onclick="clearOutput()">×</button>
+                </header>
+                <div id="generation-output" class="output-log">
+                    <p class="output-empty">Generation output will appear here...</p>
+                </div>
+            </div>
+
+            <!-- Feedback & Save UI (Hidden by default) -->
+            <div id="feedback-container" class="feedback-panel" style="display: none;">
+                <div class="rating-box">
+                    <span>Rate:</span>
+                    <button class="star-btn" onclick="rateAsset(1)">★</button>
+                    <button class="star-btn" onclick="rateAsset(2)">★</button>
+                    <button class="star-btn" onclick="rateAsset(3)">★</button>
+                    <button class="star-btn" onclick="rateAsset(4)">★</button>
+                    <button class="star-btn" onclick="rateAsset(5)">★</button>
+                </div>
+                <button id="btn-save-draft" class="btn-primary btn-sm" onclick="saveAsset()">Save to Library</button>
+                <button id="btn-add-to-chain" class="btn-accent btn-sm" onclick="switchToAssetEditor()" style="display: none;">Add to Chain</button>
+            </div>
+        </aside>
+    </main>
+
+    <!-- Page: Asset Editor (Composition Studio) - Side Panels Only -->
+    <main id="page-asset-editor" class="asset-studio page" style="display: none;">
+        <!-- Left: Hierarchy Panel -->
+        <aside class="studio-panel hierarchy-panel">
+            <header class="panel-header">
+                <h2>Hierarchy</h2>
+            </header>
+            <div id="tree-viewer" class="panel-content tree-panel"
+                hx-get="/api/assets/partials/tree"
+                hx-trigger="load"
+                hx-swap="innerHTML">
+                <p class="empty-state">Loading…</p>
+            </div>
+        </aside>
+
+        <!-- Right: Properties Panel -->
+        <aside class="studio-panel properties-panel">
+            <header class="panel-header">
+                <h2>Properties</h2>
+            </header>
+            <div id="property-editor" class="panel-content property-list">
+                <p class="empty-state">Select a card to edit properties</p>
+            </div>
+        </aside>
+
+        <!-- Bottom: Card Chain Strip -->
+        <div class="card-chain-strip">
+            <div class="chain-header">
+                <span class="chain-title">Card Chain</span>
+                <div class="chain-stats">
+                    <span class="stat-item"><span class="stat-label">Filled:</span> <span id="card-count">0</span><span class="stat-suffix">/3</span></span>
+                    <span class="stat-item"><span class="stat-label">Cost:</span> <span
+                            id="chain-cost">$0.00</span></span>
+                    <span class="stat-item"><span class="stat-label">Time:</span> <span id="chain-time">0s</span></span>
+                </div>
+                <div class="chain-actions">
+                    <button class="btn-sm" onclick="showLibraryPicker()" title="Add from library">+ Library</button>
+                    <button class="btn-sm btn-accent" onclick="compileChain()"
+                        title="Compile to binary">Compile</button>
+                </div>
+            </div>
+            <div id="card-chain" class="chain-scroll" hx-get="/api/assets/partials/chain" hx-trigger="load">
+                <div class="skeleton-card-h"></div>
+                <div class="skeleton-card-h"></div>
+                <div class="skeleton-card-h"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Page: World Editor -->
+    <main id="page-world" class="world-container page" style="display: none;">
+        <div class="empty-state full-page">
+            <h2>World Editor</h2>
+            <p>Coming soon - Terrain sculpting, entity placement, level composition</p>
+        </div>
+    </main>
+
+    <!-- Page: Library Browser -->
+    <main id="page-library" class="library-container page">
+        <header class="library-header">
+            <div class="library-tabs">
+                <button class="tab-btn active" data-library="geometry" hx-get="/api/library/geometry"
+                    hx-target="#library-content" hx-trigger="click">
+                    <span class="tab-icon">◇</span> Geometry
+                </button>
+                <button class="tab-btn" data-library="materials" hx-get="/api/library/materials"
+                    hx-target="#library-content" hx-trigger="click">
+                    <span class="tab-icon">◈</span> Materials
+                </button>
+                <button class="tab-btn" data-library="textures" hx-get="/api/library/textures"
+                    hx-target="#library-content" hx-trigger="click">
+                    <span class="tab-icon">▦</span> Textures
+                </button>
+                <button class="tab-btn" data-library="audio" hx-get="/api/library/audio" hx-target="#library-content"
+                    hx-trigger="click">
+                    <span class="tab-icon">♫</span> Audio
+                </button>
+                <button class="tab-btn" data-library="recipes" hx-get="/api/library/recipes"
+                    hx-target="#library-content" hx-trigger="click">
+                    <span class="tab-icon">▣</span> Recipes
+                </button>
+            </div>
+            <div class="library-actions">
+                <button class="btn-secondary" id="btn-upload">
+                    <span class="icon">↑</span> Upload
+                </button>
+                <button class="btn-primary" id="btn-new">
+                    <span class="icon">+</span> New
+                </button>
+            </div>
+        </header>
+
+        <div class="library-toolbar">
+            <div class="search-box">
+                <input type="search" id="library-search" placeholder="Search by name or tags..."
+                    hx-get="/api/library/search" hx-target="#library-content" hx-trigger="keyup changed delay:300ms"
+                    hx-include="[name='library-type']" name="q">
+                <input type="hidden" name="library-type" value="geometry">
+            </div>
+            <div class="filter-tags" id="active-tags">
+                <!-- Active filter tags appear here -->
+            </div>
+            <div class="view-toggle">
+                <button class="view-btn active" data-view="grid" title="Grid View">▦</button>
+                <button class="view-btn" data-view="list" title="List View">≡</button>
+            </div>
+        </div>
+
+        <div class="library-sidebar">
+            <div class="tag-cloud">
+                <h3>Filter by Tag</h3>
+                <div class="tag-category">
+                    <h4>Type</h4>
+                    <button class="tag-pill" data-tag="weapon">weapon</button>
+                    <button class="tag-pill" data-tag="vehicle">vehicle</button>
+                    <button class="tag-pill" data-tag="furniture">furniture</button>
+                    <button class="tag-pill" data-tag="prop">prop</button>
+                    <button class="tag-pill" data-tag="architecture">architecture</button>
+                </div>
+                <div class="tag-category">
+                    <h4>Material</h4>
+                    <button class="tag-pill" data-tag="metal">metal</button>
+                    <button class="tag-pill" data-tag="wood">wood</button>
+                    <button class="tag-pill" data-tag="stone">stone</button>
+                    <button class="tag-pill" data-tag="plastic">plastic</button>
+                    <button class="tag-pill" data-tag="fabric">fabric</button>
+                </div>
+                <div class="tag-category">
+                    <h4>Condition</h4>
+                    <button class="tag-pill" data-tag="pristine">pristine</button>
+                    <button class="tag-pill" data-tag="worn">worn</button>
+                    <button class="tag-pill" data-tag="damaged">damaged</button>
+                    <button class="tag-pill" data-tag="rusted">rusted</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="library-content" class="library-grid" hx-get="/api/library/geometry" hx-trigger="load">
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+            <div class="skeleton-card"></div>
+        </div>
+    </main>
+
+    <div id="browser-overlay" class="browser-overlay"></div>
+
+    <script type="module" src="/static/js/studio-navigation.js"></script>
+    <script type="module" src="/static/js/studio-chain.js"></script>
+    <script type="module" src="/static/js/studio-genai.js"></script>
+</body>
+
+</html>

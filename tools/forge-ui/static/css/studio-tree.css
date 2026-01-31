@@ -1,0 +1,163 @@
+/* Tree Viewer - Hierarchy panel styles */
+
+/* Tree Viewer (Hierarchy Panel) */
+.tree-viewer {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.tree-root {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 0;
+    font-weight: 600;
+    cursor: default;
+    user-select: none;
+}
+
+.tree-toggle {
+    width: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.tree-toggle:hover {
+    color: var(--accent);
+}
+
+.tree-children {
+    list-style: none;
+    margin: 0;
+    padding-left: 20px;
+    border-left: 1px solid var(--border);
+    margin-left: 7px;
+}
+
+.tree-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    margin: 2px 0;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.tree-item:hover {
+    background: var(--bg-elevated);
+}
+
+.tree-item:hover .tree-actions {
+    opacity: 1;
+}
+
+.tree-item.selected {
+    background: var(--accent-glow);
+    border-left: 2px solid var(--accent);
+    margin-left: -2px;
+    padding-left: 10px;
+}
+
+.tree-item.hidden {
+    opacity: 0.6;
+}
+
+.tree-item.hidden .tree-label {
+    text-decoration: line-through;
+    color: var(--text-secondary);
+}
+
+.tree-item.hidden .tree-icon {
+    opacity: 0.5;
+}
+
+.tree-item.hidden .tree-hide-btn .action-icon::before {
+    content: '👁‍🗨';
+}
+
+/* Better contrast for tree item text */
+.tree-label {
+    color: var(--text-primary);
+    font-weight: 500;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tree-icon {
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.tree-icon-component,
+.tree-icon-geometry {
+    color: #88ccff;
+    font-weight: 800;
+}
+
+.tree-icon-splat {
+    color: #dd88ff;
+    font-weight: 800;
+}
+
+.tree-icon-audio {
+    color: #88ddff;
+    font-weight: 800;
+}
+
+.tree-icon-material {
+    color: #ffaa66;
+    font-weight: 800;
+}
+
+.tree-meta {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.tree-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.tree-action-btn {
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.tree-action-btn:hover {
+    background: var(--bg-surface);
+}
+
+.tree-hide-btn:hover {
+    background: rgba(100, 150, 255, 0.2);
+}
+
+.tree-delete-btn:hover {
+    background: rgba(255, 100, 100, 0.2);
+}
+
+.action-icon {
+    font-size: 0.9rem;
+    line-height: 1;
+}

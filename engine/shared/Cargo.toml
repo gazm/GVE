@@ -1,0 +1,23 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Optional dependencies for schema generation
+schemars = { version = "0.8", optional = true }
+serde_json = { version = "1.0", optional = true }
+clap = { version = "4.4", features = ["derive"], optional = true }
+
+[features]
+default = []
+schema_gen = ["dep:schemars", "dep:serde_json", "dep:clap"]
+
+[[bin]]
+name = "schema_gen"
+path = "src/bin/schema_gen.rs"
+required-features = ["schema_gen"]
+

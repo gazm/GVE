@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GVE Dedicated Viewport</title>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #focused-viewport {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .controls-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .status-badge {
+            background: rgba(0, 0, 0, 0.5);
+            color: #00ff88;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="controls-overlay">
+        <div class="status-badge" id="status">Dedicated Viewport Ready</div>
+    </div>
+    <canvas id="focused-viewport"></canvas>
+
+    <script type="module">
+        import { initViewport } from '/static/js/viewport.js';
+
+        async function start() {
+            try {
+                await initViewport('focused-viewport');
+                document.getElementById('status').textContent = "Engine Connected";
+
+                // Listen for messages from parent window
+                window.addEventListener('message', (event) => {
+                    const { type, asset_id, binary_url } = event.data;
+
+                    if (type === 'LOAD_ASSET' && window.load_asset) {
+                        document.getElementById('status').textContent = `Loading Asset: ${asset_id}`;
+                        if (window.clear_sdf) window.clear_sdf();
+                        window.load_asset(binary_url, asset_id);
+                    }
+                });
+
+                // Periodic check for window closing to clean up? 
+                // Maybe not needed for WASM in a separate window.
+            } catch (err) {
+                document.getElementById('status').textContent = "Engine Error: " + err.message;
+                document.getElementById('status').style.color = "#ff4444";
+            }
+        }
+
+        start();
+    </script>
+</body>
+
+</html>

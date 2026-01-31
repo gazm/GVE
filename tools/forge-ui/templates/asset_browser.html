@@ -1,0 +1,14 @@
+<div class="browser-modal">
+    <div class="browser-header">
+        <h2>Component Library</h2>
+        <button class="close-btn" onclick="this.closest('.browser-overlay').innerHTML=''">×</button>
+    </div>
+    <div class="browser-search">
+        <input type="search" placeholder="Search templates, geometry, materials..." name="q"
+            hx-get="/api/assets/partials/search" hx-target="#browser-results" hx-trigger="keyup changed delay:300ms">
+    </div>
+    <div id="browser-results" class="browser-grid">
+        <!-- Search results will poplate here -->
+        <p class="empty-state">Start typing to search the library...</p>
+    </div>
+</div>

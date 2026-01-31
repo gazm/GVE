@@ -1,0 +1,9 @@
+<div id="progress-{{ asset_id }}" class="progress-container" hx-swap-oob="true">
+    <div class="progress-header">
+        <span class="progress-label">{{ status or 'Processing...' }}</span>
+        <span class="progress-value">{{ progress or 0 }}%</span>
+    </div>
+    <div class="progress-track">
+        <div class="progress-fill" style="width: {{ progress or 0 }}%;"></div>
+    </div>
+</div>

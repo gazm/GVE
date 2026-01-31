@@ -1,0 +1,35 @@
+<div class="editor-header">
+    <h3>Properties: {{ card_name }}</h3>
+    <p class="card-id">ID: {{ card_id }}</p>
+</div>
+
+<form hx-post="/api/assets/partials/property/{{ card_id }}" hx-target="this" hx-swap="outerHTML" class="property-list">
+    {% for group in property_groups %}
+    <div class="property-group">
+        <h3>{{ group.name }}</h3>
+        {% for prop in group.properties %}
+        <div class="field">
+            <label for="{{ card_id }}-{{ prop.name }}">{{ prop.label }}</label>
+            {% if prop.type == 'number' %}
+            <input type="number" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}"
+                min="{{ prop.min }}" max="{{ prop.max }}" hx-post="/api/assets/partials/property/{{ card_id }}"
+                hx-trigger="change delay:500ms" hx-target="closest form">
+            {% elif prop.type == 'range' %}
+            <input type="range" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}"
+                min="{{ prop.min }}" max="{{ prop.max }}" step="0.01"
+                hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="change delay:500ms"
+                hx-target="closest form">
+            {% else %}
+            <input type="text" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}" {% if
+                prop.readonly %}readonly{% endif %} hx-post="/api/assets/partials/property/{{ card_id }}"
+                hx-trigger="keyup changed delay:1s" hx-target="closest form">
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+
+    <div id="status-{{ card_id }}" class="save-status">
+        Ready
+    </div>
+</form>

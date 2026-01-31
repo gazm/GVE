@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+.env
+.env.local
+.env.*.local
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Rust
+target/
+**/target/
+*.rs.bk
+
+# Architect backend caches (compiled .gve_bin etc.)
+backend/architect/cache/
+backend/architect/.cache/
+
+# Logs and build artifacts
+*.log
+*.tmp
+*.temp
+build_log.txt
+wasm_build_log.txt
+wasm_err.txt
+check_error*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Node (if used)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local overrides and secrets
+*.local
+.env
+.env.*
+/.agent
+/.cursor

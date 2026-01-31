@@ -1,0 +1,22 @@
+<div class="card {{ card.type }}-card {{ card.status }}-state" id="card-{{ card.id }}"
+    hx-get="/api/assets/partials/editor/{{ card.id }}" hx-target="#property-editor" hx-trigger="click">
+    <div class="card-badge">{{ card.type|upper }}</div>
+    <div class="card-content">
+        <h3 class="card-title">{{ card.name }}</h3>
+        <p class="card-subtitle">{{ card.description }}</p>
+    </div>
+    <div class="card-footer">
+        <div class="status-tag">
+            {% if card.status == 'cached' %}
+            <span class="icon">✓</span> Library
+            {% elif card.status == 'ai-generate' %}
+            <span class="icon">⚠</span> AI: ${{ card.cost }}
+            {% else %}
+            <span class="icon">!</span> Error
+            {% endif %}
+        </div>
+        <div class="time-tag">{{ card.time }}s</div>
+    </div>
+    <div id="progress-{{ card.id }}"></div>
+    <div class="card-selection-ring"></div>
+</div>

@@ -1,0 +1,165 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SchemaRoot",
+  "type": "object",
+  "required": [
+    "asset",
+    "material",
+    "message"
+  ],
+  "properties": {
+    "asset": {
+      "$ref": "#/definitions/AssetMetadata"
+    },
+    "material": {
+      "$ref": "#/definitions/MaterialSpec"
+    },
+    "message": {
+      "$ref": "#/definitions/MessageHeader"
+    }
+  },
+  "definitions": {
+    "AssetCategory": {
+      "type": "string",
+      "enum": [
+        "Primitive",
+        "Prop",
+        "Character",
+        "Environment"
+      ]
+    },
+    "AssetMetadata": {
+      "type": "object",
+      "required": [
+        "category",
+        "id",
+        "name",
+        "settings",
+        "tags",
+        "version"
+      ],
+      "properties": {
+        "category": {
+          "$ref": "#/definitions/AssetCategory"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/definitions/AssetSettings"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "AssetSettings": {
+      "type": "object",
+      "required": [
+        "lod_count",
+        "resolution"
+      ],
+      "properties": {
+        "lod_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "resolution": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "AudioProperties": {
+      "type": "object",
+      "required": [
+        "material_name",
+        "resonance"
+      ],
+      "properties": {
+        "material_name": {
+          "type": "string"
+        },
+        "resonance": {
+          "type": "number",
+          "format": "float"
+        }
+      }
+    },
+    "ColorMode": {
+      "type": "string",
+      "enum": [
+        "Solid",
+        "Gradient",
+        "Texture"
+      ]
+    },
+    "MaterialSpec": {
+      "type": "object",
+      "required": [
+        "audio_properties",
+        "base_color",
+        "color_mode",
+        "name"
+      ],
+      "properties": {
+        "audio_properties": {
+          "$ref": "#/definitions/AudioProperties"
+        },
+        "base_color": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "float"
+          },
+          "maxItems": 3,
+          "minItems": 3
+        },
+        "color_mode": {
+          "$ref": "#/definitions/ColorMode"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "MessageHeader": {
+      "type": "object",
+      "required": [
+        "msg_type",
+        "payload_size"
+      ],
+      "properties": {
+        "msg_type": {
+          "$ref": "#/definitions/MessageType"
+        },
+        "payload_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "MessageType": {
+      "type": "string",
+      "enum": [
+        "BinaryLoad",
+        "UpdateAsset",
+        "Ping"
+      ]
+    }
+  }
+}

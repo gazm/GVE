@@ -1,0 +1,12 @@
+{
+  "definition": {
+    "fields": [
+      {
+        "type": "vector",
+        "path": "rag.embedding_fusion",
+        "numDimensions": 384,
+        "similarity": "cosine"
+      }
+    ]
+  }
+}

@@ -1,0 +1,544 @@
+/* Studio Components - Buttons, chips, cards, and interactive elements */
+
+/* Generation Panel Specific */
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+}
+
+/* Type Selector */
+.type-selector {
+    display: flex;
+    gap: 4px;
+}
+
+.type-btn {
+    flex: 1;
+    padding: 8px 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.type-btn:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-primary);
+}
+
+.type-btn.active {
+    background: var(--accent-glow);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Prompt Input */
+.prompt-input {
+    width: 100%;
+    padding: 12px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+    min-height: 80px;
+    transition: border-color 0.2s;
+}
+
+.prompt-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.prompt-input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+/* Style Chips */
+.style-chips,
+.material-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.chip {
+    padding: 6px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.chip:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-primary);
+}
+
+.chip.active {
+    background: var(--accent-glow);
+    border-color: rgba(255, 77, 0, 0.5);
+    color: var(--accent);
+}
+
+.chip-placeholder {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.material-chips .chip.suggested {
+    border-color: #00ff88;
+    color: #00ff88;
+}
+
+/* Generate Button */
+.btn-generate {
+    width: 100%;
+    padding: 14px 20px;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s;
+    margin-top: 8px;
+}
+
+.btn-generate:hover {
+    background: #ff6622;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px var(--accent-glow);
+}
+
+.btn-generate:active {
+    transform: translateY(0);
+}
+
+.btn-generate .icon {
+    font-size: 1.1rem;
+}
+
+/* Small Buttons */
+.btn-sm {
+    padding: 6px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-sm:hover {
+    border-color: var(--text-secondary);
+    color: var(--text-primary);
+}
+
+.btn-sm.btn-accent {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.btn-sm.btn-accent:hover {
+    background: #ff6622;
+}
+
+.btn-icon-sm {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 2px 6px;
+}
+
+.btn-icon-sm:hover {
+    color: var(--text-primary);
+}
+
+/* Mode Buttons */
+.mode-btn {
+    width: 32px;
+    height: 32px;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--glass-border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.mode-btn:hover {
+    background: rgba(0, 0, 0, 0.8);
+    color: var(--text-primary);
+}
+
+.mode-btn.active {
+    background: var(--accent-glow);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Cost Estimate */
+.cost-estimate {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 8px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    font-size: 0.8rem;
+}
+
+.estimate-label {
+    color: var(--text-secondary);
+}
+
+.estimate-cost {
+    color: #00ff88;
+    font-weight: 700;
+    font-family: monospace;
+}
+
+.estimate-time {
+    color: var(--text-secondary);
+    font-family: monospace;
+}
+
+/* Stats */
+.stat-item {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.stat-item span:last-child {
+    color: var(--text-primary);
+    font-family: monospace;
+    font-weight: 600;
+}
+
+.stat-suffix {
+    color: var(--text-secondary);
+    font-weight: 400;
+    margin-left: 2px;
+}
+
+/* Output Lines */
+.output-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.output-line {
+    margin: 0;
+    padding: 2px 0;
+}
+
+.output-line.info {
+    color: #88ccff;
+}
+
+.output-line.success {
+    color: #00ff88;
+}
+
+.output-line.warning {
+    color: #ffcc00;
+}
+
+.output-line.error {
+    color: #ff4444;
+}
+
+/* Slot cards: 3 bakeable slots (geometry, splat, audio) */
+.chain-scroll .slot-card {
+    position: relative;
+}
+
+.chain-scroll .slot-empty {
+    border-style: dashed;
+    opacity: 0.9;
+}
+
+.chain-scroll .slot-empty .slot-title-empty {
+    color: var(--text-secondary);
+}
+
+.chain-scroll .slot-badge.slot-badge {
+    font-size: 0.6rem;
+}
+
+.chain-scroll .slot-fill-btn,
+.chain-scroll .slot-clear-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.chain-scroll .slot-fill-btn:hover,
+.chain-scroll .slot-clear-btn:hover {
+    background: var(--accent-glow);
+    color: var(--accent);
+}
+
+.chain-scroll .slot-clear-form {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    margin: 0;
+}
+
+.chain-scroll .slot-clear-form .slot-clear-btn {
+    position: static;
+}
+
+.geometry-slot .slot-badge { background: #2a4a3a; color: #66ffaa; }
+.splat-slot .slot-badge { background: #4a3a4a; color: #cc88ff; }
+.audio-slot .slot-badge { background: #3a4a4a; color: #aaaaff; }
+
+/* Horizontal Card Styles */
+.chain-scroll .card,
+.chain-scroll .asset-card {
+    flex: 0 0 auto;
+    width: 180px;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.chain-scroll .card:hover,
+.chain-scroll .asset-card:hover {
+    border-color: var(--text-secondary);
+    transform: translateY(-2px);
+}
+
+.chain-scroll .card.selected,
+.chain-scroll .asset-card.selected {
+    border-color: var(--accent);
+    background: rgba(255, 77, 0, 0.05);
+}
+
+.chain-scroll .card-badge {
+    font-size: 0.6rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    background: var(--bg-surface);
+    border-radius: 3px;
+    color: var(--text-secondary);
+    width: fit-content;
+    margin-bottom: 6px;
+}
+
+.chain-scroll .card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chain-scroll .card-subtitle {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Chain connector lines */
+.chain-scroll .card::after {
+    content: '→';
+    position: absolute;
+    right: -14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--border);
+    font-size: 1rem;
+}
+
+.chain-scroll .card:last-child::after {
+    display: none;
+}
+
+/* Add card button in chain */
+.add-card-btn-h {
+    flex: 0 0 auto;
+    width: 60px;
+    min-width: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 2px dashed var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.add-card-btn-h:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-glow);
+}
+
+/* Skeleton for horizontal cards */
+.skeleton-card-h {
+    flex: 0 0 auto;
+    width: 180px;
+    height: 80px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+/* Card footer status badges */
+.chain-scroll .card-footer {
+    margin-top: auto;
+    padding-top: 6px;
+    border-top: 1px solid var(--glass-border);
+    font-size: 0.7rem;
+}
+
+.status-cached {
+    color: #00ff88;
+}
+
+.status-ai {
+    color: var(--accent);
+}
+
+.status-pending {
+    color: var(--text-secondary);
+}
+
+/* Card type colors */
+.component-card .card-badge {
+    background: #2a4a6a;
+    color: #6ab0ff;
+}
+
+.material-card .card-badge {
+    background: #4a3a2a;
+    color: #ffa066;
+}
+
+.geometry-card .card-badge {
+    background: #2a4a3a;
+    color: #66ffaa;
+}
+
+.texture-card .card-badge {
+    background: #4a2a4a;
+    color: #ff66ff;
+}
+
+.audio-card .card-badge {
+    background: #3a3a4a;
+    color: #aaaaff;
+}
+
+/* Feedback Panel */
+.feedback-panel {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--surface-2);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    animation: slideIn 0.3s ease-out;
+}
+
+.rating-box {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    justify-content: center;
+}
+
+.star-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: color 0.2s, transform 0.1s;
+    padding: 0 0.1rem;
+}
+
+.star-btn:hover,
+.star-btn.active {
+    color: var(--accent-color);
+    transform: scale(1.1);
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
