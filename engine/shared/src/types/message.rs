@@ -21,6 +21,11 @@ pub enum MessageType {
     RequestCompile = 0x11,
     CancelCompile  = 0x12,
 
+    // Engine Commands (Forge → WASM)
+    LoadChunk      = 0x30,  // Payload: [chunk_id(u64), x(i32), z(i32)]
+    TranslateNode  = 0x31,  // Payload: [node_id(u64), dx, dy, dz (f32 each)]
+    UpdateJoint    = 0x32,  // Payload: [joint_id(u64), qx,qy,qz,qw (f32 each)]
+
     // Legacy/Generic
     Ping           = 0xFF,
 }

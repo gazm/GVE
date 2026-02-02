@@ -92,6 +92,12 @@ twistSlider.oninput = (e) => {
 
 ## **Visualization Modes**
 
+### View Cube Overlay
+
+Every viewport now has a **view-cube overlay** in the lower-right corner (shared + dedicated). Clicking one of the faces (Front, Back, Left, Right, Top, Bottom) issues `window.snap_camera_to(...)` with the appropriate yaw/pitch while keeping the camera position constant, so you can instantly orient the camera without recalculating vectors in JS.
+
+The overlay stays in HTML/CSS; the WASM engine handles the actual camera update internally and rerenders the next frame with the new orientation.
+
 ### Mode A: SDF Source
 
 **Purpose:** Raw mathematical SDF visualization

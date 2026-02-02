@@ -1,26 +1,31 @@
 /* Studio Layout - Grid structures and panel positioning */
 
-/* Shared Viewport Container - Always visible background */
+/* Shared Viewport Container - Managed by JS for position/size */
 .shared-viewport-container {
     position: fixed;
-    top: 60px; /* Below nav */
+    /* Default full coverage (fallback) */
+    top: 60px;
     left: 0;
     right: 0;
     bottom: 0;
-    background: #000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    background: #111;
+    /* Dark background behind canvas */
+    display: block;
     z-index: 1;
+    pointer-events: auto;
+    /* Allow interaction with canvas */
 }
 
+/* When managed by JS, it might get specific style overrides */
 .shared-viewport-container canvas {
     width: 100%;
     height: 100%;
     display: block;
+    pointer-events: auto;
+    /* Ensure canvas captures events */
 }
 
-/* GenAI Studio Layout - Overlay panels on top of viewport */
+/* GenAI Studio Layout */
 .genai-studio {
     position: fixed;
     top: 60px;
@@ -28,28 +33,41 @@
     right: 0;
     bottom: 0;
     display: grid;
-    grid-template-columns: 350px 1fr 350px;
+    /* Auto columns allow resizing of panels */
+    grid-template-columns: auto 1fr auto;
     grid-template-areas: "genai-left genai-viewport genai-right";
     overflow: hidden;
-    pointer-events: none;
     z-index: 2;
+    pointer-events: none;
+    /* Layout overlay should pass clicks through gaps */
 }
 
 .genai-panel-left {
     grid-area: genai-left;
     border-right: 1px solid var(--border);
+    width: 350px;
+    /* Initial width */
+    min-width: 250px;
+    max-width: 600px;
+    /* resize: horizontal; Removed for custom handle */
+    overflow: auto;
     pointer-events: auto;
+    /* Panels capture their own events */
+    position: relative;
+    /* For handle positioning */
 }
 
 .genai-panel-right {
     grid-area: genai-right;
     border-left: 1px solid var(--border);
+    width: 350px;
     display: flex;
     flex-direction: column;
     pointer-events: auto;
+    position: relative;
 }
 
-/* Asset Editor Studio Layout - Overlay panels on top of viewport */
+/* Asset Editor Studio Layout */
 .asset-studio {
     position: fixed;
     top: 60px;
@@ -57,14 +75,15 @@
     right: 0;
     bottom: 0;
     display: grid;
-    grid-template-columns: 280px 1fr 300px;
-    grid-template-rows: 1fr 140px;
-    grid-template-areas:
-        "hierarchy viewport properties"
-        "chain chain chain";
+    /* Auto columns allow resizing */
+    grid-template-columns: auto 1fr auto;
+    /* Removed chain row, simplified to 1 main row */
+    grid-template-rows: 1fr;
+    grid-template-areas: "hierarchy viewport properties";
     overflow: hidden;
-    pointer-events: none;
     z-index: 2;
+    pointer-events: none;
+    /* Layout overlay passes clicks through */
 }
 
 /* Panel Base Styles */
@@ -73,59 +92,101 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    pointer-events: auto;
+    position: relative;
+    z-index: 10;
+    /* Above viewport placeholder */
 }
 
 .hierarchy-panel {
     grid-area: hierarchy;
     border-right: 1px solid var(--border);
+    width: 280px;
+    /* Initial width */
+    min-width: 200px;
+    max-width: 500px;
+    /* resize: horizontal; Removed */
+    overflow: auto;
+    position: relative;
+    pointer-events: auto;
+    /* Required as parent has pointer-events: none */
+}
+
+/* Resize Handles */
+.resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    z-index: 100;
+    cursor: col-resize;
+    transition: background-color 0.2s;
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+    background-color: var(--accent-primary);
+}
+
+.handle-right {
+    right: 0;
+}
+
+.handle-left {
+    left: 0;
 }
 
 .properties-panel {
     grid-area: properties;
     border-left: 1px solid var(--border);
+    width: 300px;
+    position: relative;
+    pointer-events: auto;
+    /* Required as parent has pointer-events: none */
 }
 
 .panel-header {
     padding: 16px 20px;
     border-bottom: 1px solid var(--border);
+    /* Prevent resize handle from overlapping header content if sticky */
 }
 
-.panel-header h2 {
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-secondary);
-    margin: 0;
-}
-
-.panel-content {
-    flex: 1;
-    padding: 16px;
-    overflow-y: auto;
-}
-
-/* Viewport area in grid (transparent - shows shared viewport behind) */
-.asset-studio [style*="grid-area: viewport"],
-.genai-studio [style*="grid-area: genai-viewport"] {
+/* Viewport cell - This is the "Hole" in the layout */
+.viewport-cell {
     grid-area: viewport;
+    /* Or genai-viewport */
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 100px;
     pointer-events: none;
+    /* Events pass through to fixed canvas */
+    z-index: 5;
+    /* Transparent background so fixed canvas shows through */
+    background: transparent;
 }
 
-.viewport-overlay {
+
+.viewport-cell>* {
+    pointer-events: auto;
+    /* Children (stats, buttons) capture events */
+}
+
+.viewport-cell .viewport-stats {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    padding: 16px;
-    display: flex;
-    justify-content: space-between;
-    pointer-events: none;
-    z-index: 10;
+    top: 16px;
+    left: 16px;
 }
 
-.shared-viewport-container .viewport-overlay {
-    z-index: 3; /* Above viewport but below UI panels */
+.viewport-cell .viewport-modes {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+}
+
+.viewport-cell .viewcube-overlay {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
 }
 
 .viewport-modes {
@@ -138,84 +199,18 @@
     display: flex;
     gap: 16px;
     padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(0, 0, 0, 0.75);
     backdrop-filter: blur(8px);
-    border: 1px solid var(--glass-border);
+    border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 4px;
     font-size: 0.75rem;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     font-family: monospace;
     pointer-events: auto;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
-/* Card Chain Strip - fixed height so not cut off */
-.card-chain-strip {
-    grid-area: chain;
-    background: var(--bg-surface);
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    min-height: 140px;
-    pointer-events: auto;
-}
-
-.chain-header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 16px;
-    background: var(--bg-elevated);
-    border-bottom: 1px solid var(--border);
-}
-
-.chain-title {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--text-secondary);
-}
-
-.chain-stats {
-    display: flex;
-    gap: 16px;
-    margin-left: auto;
-}
-
-.chain-actions {
-    display: flex;
-    gap: 8px;
-}
-
-/* Horizontal Card Chain Scroll */
-.chain-scroll {
-    flex: 1;
-    min-height: 88px;
-    display: flex;
-    gap: 8px;
-    padding: 12px 16px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    align-items: stretch;
-}
-
-/* Scrollbar styling for chain */
-.chain-scroll::-webkit-scrollbar {
-    height: 6px;
-}
-
-.chain-scroll::-webkit-scrollbar-track {
-    background: var(--bg-deep);
-}
-
-.chain-scroll::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 3px;
-}
-
-.chain-scroll::-webkit-scrollbar-thumb:hover {
-    background: var(--text-secondary);
-}
+/* Card Chain styles removed */
 
 /* Properties panel in studio */
 .properties-panel .property-list {

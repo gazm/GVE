@@ -82,10 +82,10 @@ def render_library_card(item: dict, library_type: str) -> str:
         cost_text = "Free" if item["cost"] == 0 else f"${item['cost']:.2f}"
         cost_html = f'<span class="stat cost {cost_class}">{cost_text}</span>'
     
-    action_btn = '<button class="btn-use">Use</button>' if library_type == "recipes" else '<button class="btn-add">+</button>'
+    action_btn = '<button class="btn-use" onclick="event.stopPropagation()">Use</button>' if library_type == "recipes" else ''
     
     return f'''
-    <div class="library-card" data-id="{item['id']}" data-type="{library_type}">
+    <div class="library-card" data-id="{item['id']}" data-type="{library_type}" onclick="addToSmartSlot('{item['id']}', '{library_type}')">
         <div class="card-preview">
             <div class="preview-{library_type}">{icon}</div>
         </div>
@@ -102,7 +102,7 @@ def render_library_card(item: dict, library_type: str) -> str:
         </div>
         <div class="card-actions">
             {action_btn}
-            <button class="btn-preview">👁</button>
+            <button class="btn-preview" onclick="event.stopPropagation(); previewItem('{item['id']}', '{library_type}')">Preview</button>
         </div>
     </div>
     '''

@@ -22,6 +22,16 @@ Data formats, schemas, and storage systems.
 
 ---
 
+### [World and Chunks](./world-and-chunks.md) ✅
+**World Editor metadata: current world, 8m×8m chunks, pipeline state.**
+
+**Key Topics:**
+- World document (id, name, chunks)
+- Chunk (id, x, z, state: unprocessed | analyzing | baking | finalized)
+- REST shape: GET/POST /api/world, PATCH /api/world/chunks/{id}
+
+---
+
 ### [Database Architecture](./database-architecture.md) ✅
 **MongoDB + local cache system.**
 

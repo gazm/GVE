@@ -10,7 +10,7 @@
 
 ### 📦 Core Concepts
 - **[Viewport & Rendering](./forge-viewport.md)** - Rust WASM core, visualization modes
-- **[Card-Chain Workflow](./forge-card-chain.md)** - Modular asset assembly system
+- **[Viewport & Rendering](./forge-viewport.md)** - Rust WASM core, visualization modes
 - **[Component Libraries](./forge-libraries.md)** - Geometry, materials, textures, audio, recipes
 
 ### 🎨 Asset Creation
@@ -54,7 +54,7 @@
 ```
 ┌─────────────────────────────────────────┐
 │  The Forge (HTML5 + htmx + Rust WASM)  │
-│  - Card-chain UI                        │
+│  - Hierarchy/Tree UI                    │
 │  - Component library browser            │
 │  - Live WASM viewport                   │
 └──────────────┬──────────────────────────┘
@@ -78,7 +78,7 @@
 
 ## **Key Features**
 
-### 🎯 **Card-Chain Assembly** → [Learn More](./forge-card-chain.md)
+### 🎯 **Modular Asset Assembly**
 Build assets from reusable components instead of regenerating everything:
 - **75% cost reduction** on average
 - **80% faster** iteration
@@ -125,7 +125,7 @@ Only generate what's missing:
 ### Example 1: Weapon (AK-47)
 **Input:** Prompt "AK-47", Style "worn"
 
-**Card Chain:**
+**Composition:**
 1. Receiver geometry (library) - $0
 2. Material: Rusty steel (library) - $0
 3. Stock geometry (AI generate) - $0.03
@@ -138,7 +138,7 @@ Only generate what's missing:
 ### Example 2: Furniture (Leather Chair)
 **Input:** Prompt "chair", Texture "leather"
 
-**Card Chain:**
+**Composition:**
 1. Chair frame (library - from previous oak chair) - $0
 2. Material: Leather texture (AI generate) - $0.02
 
@@ -149,7 +149,7 @@ Only generate what's missing:
 ### Example 3: Vehicle (Military Jeep)
 **Input:** Recipe "Military Jeep (Worn)"
 
-**Card Chain:** 12 cards, all from library
+**Composition:** 12 components, all from library
 
 **Total:** $0, instant, 100% cached
 
@@ -158,16 +158,15 @@ Only generate what's missing:
 ## **Getting Started**
 
 1. **Browse Examples** → [Recipe Library](./forge-libraries.md#recipe-library)
-2. **Learn Card System** → [Card-Chain Guide](./forge-card-chain.md)
-3. **Explore Materials** → [Material Database](../data/material-database.md)
-4. **Understand AI** → [AI Pipeline](../workflows/ai-pipeline.md)
+1. **Browse Examples** → [Recipe Library](./forge-libraries.md#recipe-library)
+2. **Explore Materials** → [Material Database](../data/material-database.md)
+3. **Understand AI** → [AI Pipeline](../workflows/ai-pipeline.md)
 
 ---
 
 ## **Technical Deep Dives**
 
 ### For Artists:
-- [Card-Chain Workflow](./forge-card-chain.md) - Visual asset assembly
 - [Texture Management](./texture-library-implementation.md) - Upload, generate, organize
 - [World Editor Tools](./forge-world-editor.md) - Terrain sculpting, level design
 

@@ -149,6 +149,40 @@ async def fill_chain_slot(slot_type: str, request: Request, asset_id: Optional[s
     return await get_chain_partial(request)
 
 
+@router.post("/chain/smart-add", response_class=HTMLResponse)
+async def smart_add_asset(request: Request, asset_id: str = Form(...), asset_type: Optional[str] = Form(None)):
+    """
+    Intelligently add an asset to the appropriate slot based on its type.
+    - Geometry -> 'geometry' slot
+    - Audio -> 'audio' slot
+    - Splat -> 'splat' slot
+    Returns updated chain partial.
+    """
+    # If type hint provided from frontend (e.g. from library tab), use it.
+    # Otherwise we could load the asset and check its metadata.
+    target_slot = None
+    
+    # Simple mapping from library types to chain slots
+    if asset_type:
+        type_lower = asset_type.lower()
+        if type_lower in ("geometry", "prop", "weapon", "vehicle", "character"):
+            target_slot = "geometry"
+        elif type_lower == "audio":
+            target_slot = "audio"
+        elif type_lower == "splat":
+            target_slot = "splat"
+    
+    # Fallback: Load asset to check internal type if needed (omitted for speed if hint is good)
+    if not target_slot:
+        # Default to geometry if unsure, or specific logic
+        target_slot = "geometry"
+        
+    if target_slot in _chain_slots:
+        _chain_slots[target_slot] = asset_id
+    
+    return await get_chain_partial(request)
+
+
 @router.post("/chain/fill", response_class=HTMLResponse)
 async def fill_first_empty_slot(request: Request, asset_id: str = Form(...)):
     """Fill the first empty slot (geometry, then splat, then audio) with the given asset_id. Returns updated chain partial."""
@@ -162,25 +196,54 @@ async def fill_first_empty_slot(request: Request, asset_id: str = Form(...)):
 @router.get("/partials/tree", response_class=HTMLResponse)
 async def get_tree_partial(request: Request):
     """Hierarchy panel: root Scene + children from chain state (_chain_slots). App is source of truth."""
+    
+    # 1. Gather slots
     slots: list[dict] = []
+    main_asset_name = "New Asset"
+    
     for slot_type in ("geometry", "splat", "audio"):
         asset_id = _chain_slots.get(slot_type)
         label, desc = _get_slot_display(slot_type)
+        
         if asset_id:
             asset = await load_asset(asset_id)
             if asset:
+                # Use geometry name as the main asset name if available
+                if slot_type == "geometry":
+                    main_asset_name = asset.name
+                
                 slots.append({
                     "slot_type": slot_type,
                     "asset_id": asset_id,
-                    "name": asset.name,
+                    "name": "Geometry" if slot_type == "geometry" else asset.name,
                     "empty": False,
                 })
             else:
                 slots.append({"slot_type": slot_type, "asset_id": None, "name": label, "empty": True})
         else:
             slots.append({"slot_type": slot_type, "asset_id": None, "name": label, "empty": True})
-    return templates.TemplateResponse("tree_viewer.html", {"request": request, "root_name": "Scene", "slots": slots})
 
+    # 2. Structure as Scene -> Asset -> Slots
+    # We only have one "Asset" in the chain context right now.
+    entities = [
+        {
+            "name": main_asset_name,
+            "type": "asset",
+            "children": slots
+        }
+    ]
+
+    return templates.TemplateResponse("tree_viewer.html", {"request": request, "root_name": "Scene", "entities": entities})
+
+
+@router.get("/partials/search", response_class=HTMLResponse)
+async def search_assets_partial(request: Request, q: str = Query("", min_length=0)):
+    """Return asset browser grid partial for search query."""
+    if not q:
+        items = [] # Or return popular/recent
+    else:
+        items = await search_assets(q)
+    return templates.TemplateResponse("library_grid.html", {"request": request, "items": items, "library_type": "geometry"}) # Default type
 
 @router.get("/partials/browser", response_class=HTMLResponse)
 async def get_browser_partial(request: Request):

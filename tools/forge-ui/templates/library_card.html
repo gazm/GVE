@@ -1,4 +1,5 @@
-<div class="library-card" data-id="{{ item.id }}" data-type="{{ library_type }}">
+<div class="library-card" data-id="{{ item.id }}" data-type="{{ library_type }}"
+    onclick="addToSmartSlot('{{ item.id }}', '{{ library_type }}')">
     <div class="card-preview">
         {% if library_type == 'geometry' %}
         <div class="preview-3d">◇</div>
@@ -12,7 +13,7 @@
         <div class="preview-recipe">▣</div>
         {% endif %}
     </div>
-    
+
     <div class="card-body">
         <h3 class="card-name">{{ item.name }}</h3>
         <div class="card-tags">
@@ -24,7 +25,7 @@
             {% endif %}
         </div>
     </div>
-    
+
     <div class="card-meta">
         <div class="card-rating">
             {% for i in range(5) %}
@@ -40,18 +41,11 @@
             {% endif %}
         </div>
     </div>
-    
+
     <div class="card-actions">
-        {% if library_type == 'recipes' %}
-        <button class="btn-use" hx-post="/api/assets/from-recipe/{{ item.id }}" 
-                hx-target="#card-chain" onclick="showPage('assets')">
-            Use Recipe
-        </button>
-        {% else %}
-        <button class="btn-add" title="Add to chain (fills first empty slot)" data-asset-id="{{ item.id }}" data-asset-name="{{ item.name|e }}" onclick="addToChain(this.dataset.assetId, this.dataset.assetName)">+</button>
-        {% endif %}
+        <!-- Add button removed, entire card is clickable -->
         <button class="btn-preview" title="Preview (viewport only)"
-                onclick="previewItem('{{ item.id }}', '{{ library_type }}')">
+            onclick="event.stopPropagation(); previewItem('{{ item.id }}', '{{ library_type }}')">
             Preview
         </button>
     </div>

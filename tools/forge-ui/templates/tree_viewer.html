@@ -4,52 +4,89 @@
         <span class="tree-label">{{ root_name }}</span>
     </div>
     <ul class="tree-children" id="tree-children" role="group">
-        {% for slot in slots %}
-        {% if not slot.empty %}
-        <li class="tree-item" role="treeitem" data-card-id="{{ slot.asset_id }}" data-asset-id="{{ slot.asset_id }}" data-slot-type="{{ slot.slot_type }}"
-            hx-get="/api/assets/partials/editor/{{ slot.asset_id }}" hx-target="#property-editor" hx-trigger="click" hx-swap="innerHTML"
-            onclick="selectCard('{{ slot.asset_id }}')">
-            <span class="tree-icon tree-icon-{{ slot.slot_type }}">{{ slot.slot_type[0]|upper }}</span>
-            <span class="tree-label">{{ slot.name }}</span>
-            <span class="tree-meta">({{ slot.slot_type }})</span>
-            <span class="tree-actions">
-                <button class="tree-action-btn tree-hide-btn" onclick="event.stopPropagation(); toggleHideAsset('{{ slot.asset_id }}')" title="Hide/Show">
-                    <span class="action-icon">👁</span>
-                </button>
-                <button class="tree-action-btn tree-delete-btn" onclick="event.stopPropagation(); deleteAssetFromChain('{{ slot.asset_id }}', '{{ slot.slot_type }}')" title="Remove from chain">
-                    <span class="action-icon">🗑</span>
-                </button>
-            </span>
+        {% for entity in entities %}
+        <!-- Asset Parent Node -->
+        <li class="tree-group-item" role="treeitem" aria-expanded="true">
+            <div class="tree-item"
+                onclick="event.stopPropagation(); toggleTreeGroup(this.querySelector('.tree-toggle'))">
+                <span class="tree-toggle" onclick="event.stopPropagation(); toggleTreeGroup(this)">▼</span>
+                <span class="tree-icon">📦</span>
+                <span class="tree-label">{{ entity.name }}</span>
+            </div>
+
+            <!-- We could add asset-level actions here later (save, clear, etc) -->
+            <ul class="tree-children" role="group">
+                {% for slot in entity.children %}
+                {% if slot.empty %}
+                <li class="tree-item empty-slot" role="treeitem" data-slot-type="{{ slot.slot_type }}"
+                    onclick="showLibraryPicker()">
+                    <span class="tree-icon tree-icon-empty">◌</span>
+                    <span class="tree-label">Empty {{ slot.slot_type|title }}</span>
+                    <span class="tree-actions">
+                        <button class="tree-action-btn tree-add-btn" title="Add Component">
+                            <span class="action-icon">+</span>
+                        </button>
+                    </span>
+                </li>
+                {% else %}
+                <li class="tree-item" role="treeitem" data-card-id="{{ slot.asset_id }}"
+                    data-asset-id="{{ slot.asset_id }}" data-slot-type="{{ slot.slot_type }}"
+                    hx-get="/api/assets/partials/editor/{{ slot.asset_id }}" hx-target="#property-editor"
+                    hx-trigger="click" hx-swap="innerHTML" onclick="selectCard('{{ slot.asset_id }}')">
+                    <span class="tree-icon tree-icon-{{ slot.slot_type }}">{{ slot.slot_type[0]|upper }}</span>
+                    <span class="tree-label">{{ slot.name }}</span>
+                    <!-- Meta hidden for compactness in nested view, or can stay -->
+                    <span class="tree-actions">
+                        <button class="tree-action-btn tree-hide-btn"
+                            onclick="event.stopPropagation(); toggleHideAsset('{{ slot.asset_id }}')" title="Hide/Show">
+                            <span class="action-icon">👁</span>
+                        </button>
+                        <button class="tree-action-btn tree-delete-btn"
+                            onclick="event.stopPropagation(); deleteAssetFromChain('{{ slot.asset_id }}')"
+                            title="Remove">
+                            <span class="action-icon">🗑</span>
+                        </button>
+                    </span>
+                </li>
+                {% endif %}
+                {% endfor %}
+            </ul>
         </li>
-        {% endif %}
         {% endfor %}
     </ul>
 </div>
 <script>
-(function() {
-    // Tree collapse/expand
-    var root = document.querySelector('#tree-viewer [data-tree-root]');
-    if (root) {
-        root.addEventListener('click', function(e) {
-            if (e.target.classList.contains('tree-toggle')) {
-                var group = this.parentElement.querySelector('.tree-children');
-                var expanded = this.getAttribute('aria-expanded') !== 'false';
-                if (group) group.style.display = expanded ? 'none' : '';
-                this.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-                this.textContent = expanded ? '▶' : '▼';
-                this.setAttribute('title', expanded ? 'Expand' : 'Collapse');
-            }
-        });
-    }
-    
-    // Restore hidden state after tree refresh
-    if (window._hiddenAssets) {
-        document.querySelectorAll('.tree-item').forEach(function(item) {
-            var assetId = item.getAttribute('data-asset-id');
-            if (assetId && window._hiddenAssets.has(assetId)) {
-                item.classList.add('hidden');
-            }
-        });
-    }
-})();
+    (function () {
+        // Tree collapse/expand
+        var root = document.querySelector('#tree-viewer [data-tree-root]');
+        if (root) {
+            root.addEventListener('click', function (e) {
+                if (e.target.classList.contains('tree-toggle')) {
+                    toggleTreeGroup(e.target);
+                }
+            });
+        }
+
+        window.toggleTreeGroup = function (toggleBtn) {
+            // Find the closest list item group
+            var groupItem = toggleBtn.closest('.tree-group-item');
+            var group = groupItem ? groupItem.querySelector('.tree-children') : null;
+
+            var expanded = toggleBtn.getAttribute('aria-expanded') !== 'false';
+            if (group) group.style.display = expanded ? 'none' : '';
+            toggleBtn.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+            toggleBtn.textContent = expanded ? '▶' : '▼';
+            toggleBtn.setAttribute('title', expanded ? 'Expand' : 'Collapse');
+        };
+
+        // Restore hidden state after tree refresh
+        if (window._hiddenAssets) {
+            document.querySelectorAll('.tree-item').forEach(function (item) {
+                var assetId = item.getAttribute('data-asset-id');
+                if (assetId && window._hiddenAssets.has(assetId)) {
+                    item.classList.add('hidden');
+                }
+            });
+        }
+    })();
 </script>

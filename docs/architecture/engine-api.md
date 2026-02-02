@@ -607,8 +607,26 @@ enum MessageType {
     RequestAsset   = 0x10,  // Payload: none (uses header.asset_id)
     RequestCompile = 0x11,  // Payload: DNA JSON bytes
     CancelCompile  = 0x12,  // Payload: none
+    // Forge → WASM (instant, engine-only commands)
+    LoadChunk      = 0x30,  // Payload: [chunk_id(u64), x(i32), z(i32)]
+    TranslateNode  = 0x31,  // Payload: [node_id(u64), dx, dy, dz (f32 each)]
+    UpdateJoint    = 0x32,  // Payload: [joint_id(u64), qx,qy,qz,qw (f32 each)]
 }
 ```
+
+### Engine Commands (World/Character Editor)
+
+The Forge UI now talks directly to the WASM engine for interactive edits. Every engine command packs a header with `msg_type` and routes through `handle_message`:
+
+- `LoadChunk` instantly informs the renderer which chunk grid cell should become active (coord pair + chunk id). You can call `window.load_chunk(chunkId, x, z)`.
+- `TranslateNode` sends a node transform delta (`dx, dy, dz`) that the engine applies immediately, so repositioning grips or limbs stays lag-free (`window.translate_node(nodeId, dx, dy, dz)`).
+- `UpdateJoint` streams quaternion updates for character bones (`window.update_joint(jointId, qx, qy, qz, qw)`).
+
+The UI stays in HTML/JS—the viewport just renders the final results of these commands.
+
+### Camera Movement API
+
+Any viewport can now call `snap_camera_to(x, y, z, yaw, pitch)` so the engine repositions the camera instantly without additional header plumbing. This function lives in the WASM module and reuses `Renderer::update_camera` so the uniforms and view matrix are updated before the next frame.
 
 ### Cache Versioning (Zero Binary Bloat)
 

@@ -1,163 +1,155 @@
-/* Tree Viewer - Hierarchy panel styles */
-
-/* Tree Viewer (Hierarchy Panel) */
+/* Tree Viewer Styles */
 .tree-viewer {
-    font-size: 0.85rem;
+    font-family: 'Inter', sans-serif;
     color: var(--text-primary);
+    font-size: 0.9em;
+    padding: 0.5rem;
 }
 
 .tree-root {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 0;
+    padding: 4px 8px;
+    cursor: pointer;
     font-weight: 600;
-    cursor: default;
-    user-select: none;
+    color: var(--text-secondary);
 }
 
 .tree-toggle {
-    width: 16px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 0.7rem;
-    cursor: pointer;
-    flex-shrink: 0;
-}
-
-.tree-toggle:hover {
-    color: var(--accent);
+    margin-right: 6px;
+    font-size: 0.8em;
+    width: 12px;
 }
 
 .tree-children {
     list-style: none;
-    margin: 0;
     padding-left: 20px;
-    border-left: 1px solid var(--border);
-    margin-left: 7px;
+    margin: 4px 0 0 0;
 }
 
 .tree-item {
     display: flex;
     align-items: center;
-    gap: 8px;
     padding: 6px 8px;
-    margin: 2px 0;
+    margin-bottom: 2px;
     border-radius: 4px;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
+    transition: background-color 0.15s ease;
+    border: 1px solid transparent;
 }
 
 .tree-item:hover {
-    background: var(--bg-elevated);
-}
-
-.tree-item:hover .tree-actions {
-    opacity: 1;
+    background-color: var(--bg-hover);
 }
 
 .tree-item.selected {
-    background: var(--accent-glow);
-    border-left: 2px solid var(--accent);
-    margin-left: -2px;
-    padding-left: 10px;
+    background-color: var(--bg-selected);
+    border-color: var(--accent-primary);
 }
 
 .tree-item.hidden {
-    opacity: 0.6;
-}
-
-.tree-item.hidden .tree-label {
-    text-decoration: line-through;
-    color: var(--text-secondary);
-}
-
-.tree-item.hidden .tree-icon {
     opacity: 0.5;
 }
 
-.tree-item.hidden .tree-hide-btn .action-icon::before {
-    content: '👁‍🗨';
+/* Empty Slot Styling */
+.tree-item.empty-slot {
+    border: 1px dashed var(--border-color);
+    color: var(--text-tertiary);
+    background-color: transparent;
 }
 
-/* Better contrast for tree item text */
+.tree-item.empty-slot:hover {
+    border-color: var(--accent-secondary);
+    background-color: var(--bg-hover);
+    color: var(--accent-secondary);
+}
+
+.tree-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.7em;
+    font-weight: bold;
+    margin-right: 8px;
+}
+
+.tree-icon-empty {
+    background: none;
+    font-size: 1.2em;
+}
+
 .tree-label {
-    color: var(--text-primary);
-    font-weight: 500;
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    margin-right: 8px;
 }
 
-.tree-icon {
-    flex-shrink: 0;
-    width: 18px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    font-weight: 700;
+/* Metadata Group */
+.tree-meta-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 8px;
+    font-size: 0.85em;
+    color: var(--text-tertiary);
 }
 
-.tree-icon-component,
-.tree-icon-geometry {
-    color: #88ccff;
-    font-weight: 800;
+.tree-meta-cost {
+    background-color: rgba(0, 255, 0, 0.1);
+    color: #4ade80;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.8em;
 }
 
-.tree-icon-splat {
-    color: #dd88ff;
-    font-weight: 800;
-}
-
-.tree-icon-audio {
-    color: #88ddff;
-    font-weight: 800;
-}
-
-.tree-icon-material {
-    color: #ffaa66;
-    font-weight: 800;
-}
-
-.tree-meta {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
+.tree-meta-time {
+    background-color: rgba(59, 130, 246, 0.1);
+    color: #60a5fa;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.8em;
 }
 
 .tree-actions {
-    margin-left: auto;
     display: flex;
     gap: 4px;
     opacity: 0;
     transition: opacity 0.2s;
 }
 
+.tree-item:hover .tree-actions {
+    opacity: 1;
+}
+
 .tree-action-btn {
-    background: transparent;
+    background: none;
     border: none;
-    padding: 2px 4px;
+    color: var(--text-tertiary);
+    padding: 2px;
     cursor: pointer;
     border-radius: 3px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background 0.2s;
 }
 
 .tree-action-btn:hover {
-    background: var(--bg-surface);
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
 }
 
-.tree-hide-btn:hover {
-    background: rgba(100, 150, 255, 0.2);
+.tree-action-btn.tree-delete-btn:hover {
+    color: #ef4444;
+    /* Red for delete */
 }
 
-.tree-delete-btn:hover {
-    background: rgba(255, 100, 100, 0.2);
-}
-
-.action-icon {
-    font-size: 0.9rem;
-    line-height: 1;
+.tree-action-btn.tree-add-btn {
+    color: var(--accent-secondary);
 }

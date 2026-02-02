@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/static/css/studio-layout.css">
     <link rel="stylesheet" href="/static/css/studio-components.css">
     <link rel="stylesheet" href="/static/css/studio-tree.css">
+    <link rel="stylesheet" href="/static/css/studio-world.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -38,20 +39,6 @@
 
     <!-- Shared Viewport Section (always visible) -->
     <section class="shared-viewport-container">
-        <div class="viewport-overlay">
-            <div class="viewport-stats">
-                <span id="fps">60 FPS</span>
-                <span id="tri-count">SDF Evaluation</span>
-            </div>
-            <div class="viewport-modes">
-                <button class="mode-btn active" data-mode="sdf" title="SDF Source">◇</button>
-                <button class="mode-btn" data-mode="shell" title="Shell Mesh">△</button>
-                <button class="mode-btn" data-mode="splat" title="Splat View">●</button>
-                <button class="mode-btn" data-mode="physics" title="Physics Debug">☐</button>
-                <button class="mode-btn" onclick="clearViewportManual()" title="Clear Viewport">×</button>
-                <button class="mode-btn" onclick="openExternalViewport()" title="Open Dedicated Viewport">◳</button>
-            </div>
-        </div>
         <canvas id="shared-viewport"></canvas>
     </section>
 
@@ -62,8 +49,8 @@
             <header class="panel-header">
                 <h2>Generate</h2>
             </header>
-
             <div class="panel-content">
+                <!-- Content skipped for brevity -->
                 <!-- Asset Type Selector -->
                 <div class="form-group">
                     <label>Asset Type</label>
@@ -113,10 +100,28 @@
                     <span class="estimate-time">~0s</span>
                 </div>
             </div>
+            <div class="resize-handle handle-right"></div>
         </aside>
+
+        <!-- Center: Viewport overlay (stats, mode buttons, view cube) -->
+        <div class="viewport-cell" style="grid-area: genai-viewport;">
+            <div class="viewport-stats">
+                <span id="fps">60 FPS</span>
+                <span id="tri-count">SDF Evaluation</span>
+            </div>
+            <div class="viewport-modes">
+                <button class="mode-btn active" data-mode="sdf" title="SDF Source">◇</button>
+                <button class="mode-btn" data-mode="shell" title="Shell Mesh">△</button>
+                <button class="mode-btn" data-mode="splat" title="Splat View">●</button>
+                <button class="mode-btn" data-mode="physics" title="Physics Debug">☐</button>
+                <button class="mode-btn" onclick="clearViewportManual()" title="Clear Viewport">×</button>
+                <button class="mode-btn" onclick="openExternalViewport()" title="Open Dedicated Viewport">◳</button>
+            </div>
+        </div>
 
         <!-- Right: Output & Feedback -->
         <aside class="studio-panel genai-panel-right">
+            <div class="resize-handle handle-left"></div>
             <!-- Generation Output Log -->
             <div class="output-section">
                 <header class="output-header">
@@ -139,7 +144,8 @@
                     <button class="star-btn" onclick="rateAsset(5)">★</button>
                 </div>
                 <button id="btn-save-draft" class="btn-primary btn-sm" onclick="saveAsset()">Save to Library</button>
-                <button id="btn-add-to-chain" class="btn-accent btn-sm" onclick="switchToAssetEditor()" style="display: none;">Add to Chain</button>
+                <button id="btn-add-to-chain" class="btn-accent btn-sm" onclick="switchToAssetEditor()"
+                    style="display: none;">Add to Chain</button>
             </div>
         </aside>
     </main>
@@ -150,17 +156,37 @@
         <aside class="studio-panel hierarchy-panel">
             <header class="panel-header">
                 <h2>Hierarchy</h2>
+                <div class="panel-actions">
+                    <button class="btn-icon-sm" onclick="showLibraryPicker()" title="Add Asset">+</button>
+                    <button class="btn-icon-sm" onclick="compileChain()" title="Compile">⚡</button>
+                </div>
             </header>
-            <div id="tree-viewer" class="panel-content tree-panel"
-                hx-get="/api/assets/partials/tree"
-                hx-trigger="load"
+            <div id="tree-viewer" class="panel-content tree-panel" hx-get="/api/assets/partials/tree" hx-trigger="load"
                 hx-swap="innerHTML">
                 <p class="empty-state">Loading…</p>
             </div>
+            <div class="resize-handle handle-right"></div>
         </aside>
+
+        <!-- Center: Viewport overlay (stats, mode buttons, view cube) -->
+        <div class="viewport-cell" style="grid-area: viewport;">
+            <div class="viewport-stats">
+                <span id="fps-asset">60 FPS</span>
+                <span id="tri-count-asset">SDF Evaluation</span>
+            </div>
+            <div class="viewport-modes">
+                <button class="mode-btn active" data-mode="sdf" title="SDF Source">◇</button>
+                <button class="mode-btn" data-mode="shell" title="Shell Mesh">△</button>
+                <button class="mode-btn" data-mode="splat" title="Splat View">●</button>
+                <button class="mode-btn" data-mode="physics" title="Physics Debug">☐</button>
+                <button class="mode-btn" onclick="clearViewportManual()" title="Clear Viewport">×</button>
+                <button class="mode-btn" onclick="openExternalViewport()" title="Open Dedicated Viewport">◳</button>
+            </div>
+        </div>
 
         <!-- Right: Properties Panel -->
         <aside class="studio-panel properties-panel">
+            <div class="resize-handle handle-left"></div>
             <header class="panel-header">
                 <h2>Properties</h2>
             </header>
@@ -168,36 +194,83 @@
                 <p class="empty-state">Select a card to edit properties</p>
             </div>
         </aside>
-
-        <!-- Bottom: Card Chain Strip -->
-        <div class="card-chain-strip">
-            <div class="chain-header">
-                <span class="chain-title">Card Chain</span>
-                <div class="chain-stats">
-                    <span class="stat-item"><span class="stat-label">Filled:</span> <span id="card-count">0</span><span class="stat-suffix">/3</span></span>
-                    <span class="stat-item"><span class="stat-label">Cost:</span> <span
-                            id="chain-cost">$0.00</span></span>
-                    <span class="stat-item"><span class="stat-label">Time:</span> <span id="chain-time">0s</span></span>
-                </div>
-                <div class="chain-actions">
-                    <button class="btn-sm" onclick="showLibraryPicker()" title="Add from library">+ Library</button>
-                    <button class="btn-sm btn-accent" onclick="compileChain()"
-                        title="Compile to binary">Compile</button>
-                </div>
-            </div>
-            <div id="card-chain" class="chain-scroll" hx-get="/api/assets/partials/chain" hx-trigger="load">
-                <div class="skeleton-card-h"></div>
-                <div class="skeleton-card-h"></div>
-                <div class="skeleton-card-h"></div>
-            </div>
-        </div>
     </main>
 
     <!-- Page: World Editor -->
-    <main id="page-world" class="world-container page" style="display: none;">
-        <div class="empty-state full-page">
-            <h2>World Editor</h2>
-            <p>Coming soon - Terrain sculpting, entity placement, level composition</p>
+    <main id="page-world" class="world-studio page" style="display: none;">
+        <aside class="studio-panel world-panel-left" id="world-panel-left">
+            <header class="panel-header">
+                <h2>Chunk Map & Terrain</h2>
+                <button type="button" id="world-new-btn" class="btn-sm btn-accent" title="Create new world">New
+                    World</button>
+            </header>
+            <div class="panel-content">
+                <div class="world-chunk-section">
+                    <h3>Map Bricks (8m × 8m)</h3>
+                    <div id="world-chunk-grid-wrapper" hx-get="/api/world/partials/chunks" hx-trigger="load"
+                        hx-swap="innerHTML">
+                        <div id="world-chunk-grid" class="chunk-grid">
+                            <p class="empty-state">Loading…</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="world-brushes-section">
+                    <h3>Terrain Brushes</h3>
+                    <div id="world-brush-toolbar" class="brush-toolbar"></div>
+                    <div class="world-slider-group">
+                        <label>Brush Size: <span id="world-brush-size-value">4.0</span>m</label>
+                        <input type="range" id="world-brush-size" min="1" max="8" step="0.5" value="4">
+                    </div>
+                    <div class="world-slider-group">
+                        <label>Strength: <span id="world-brush-strength-value">0.50</span></label>
+                        <input type="range" id="world-brush-strength" min="0.1" max="1" step="0.05" value="0.5">
+                    </div>
+                </div>
+                <div class="world-materials-section">
+                    <h3>Terrain Materials</h3>
+                    <div id="world-materials-list" class="world-materials-list"></div>
+                </div>
+            </div>
+        </aside>
+        <!-- Center: Viewport overlay (stats, mode buttons, view cube) -->
+        <div class="viewport-cell" style="grid-area: viewport;">
+            <div class="viewport-stats">
+                <span id="fps-world">60 FPS</span>
+                <span id="tri-count-world">SDF Evaluation</span>
+            </div>
+            <div class="viewport-modes">
+                <button class="mode-btn active" data-mode="sdf" title="SDF Source">◇</button>
+                <button class="mode-btn" data-mode="shell" title="Shell Mesh">△</button>
+                <button class="mode-btn" data-mode="splat" title="Splat View">●</button>
+                <button class="mode-btn" data-mode="physics" title="Physics Debug">☐</button>
+                <button class="mode-btn" onclick="clearViewportManual()" title="Clear Viewport">×</button>
+                <button class="mode-btn" onclick="openExternalViewport()" title="Open Dedicated Viewport">◳</button>
+            </div>
+        </div>
+
+        <aside class="studio-panel world-panel-right">
+            <header class="panel-header">
+                <h2>Entity Library</h2>
+            </header>
+            <div class="panel-content">
+                <div class="world-entity-section">
+                    <div class="world-entity-filter">
+                        <select id="world-entity-filter" aria-label="Filter entities">
+                            <option value="props">Props</option>
+                        </select>
+                    </div>
+                    <div id="world-entity-grid" class="world-entity-grid"></div>
+                </div>
+                <button type="button" id="world-import-btn" class="world-import-btn">Import Real-World Location</button>
+            </div>
+        </aside>
+        <div class="world-strip">
+            <span id="world-strip-selection" class="world-strip-selection">No chunks selected</span>
+            <div class="world-strip-actions">
+                <button type="button" id="world-strip-artist" class="btn-sm">Artist Pass</button>
+                <button type="button" id="world-strip-translate" class="btn-sm">Translate Node</button>
+                <button type="button" id="world-strip-bake" class="btn-sm btn-accent">Bake</button>
+            </div>
         </div>
     </main>
 
@@ -292,8 +365,8 @@
     <div id="browser-overlay" class="browser-overlay"></div>
 
     <script type="module" src="/static/js/studio-navigation.js"></script>
-    <script type="module" src="/static/js/studio-chain.js"></script>
     <script type="module" src="/static/js/studio-genai.js"></script>
+    <script type="module" src="/static/js/studio-world.js"></script>
 </body>
 
 </html>

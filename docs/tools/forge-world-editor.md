@@ -349,6 +349,19 @@ AI-assisted polish for terrain and props:
 
 ---
 
-**Version:** 1.0  
-**Last Updated:** January 25, 2026  
-**Related:** [AI Pipeline](../workflows/ai-pipeline.md) | [Libraries](./forge-libraries.md)
+**Version:** 1.1  
+**Last Updated:** January 31, 2026  
+
+**Current implementation:** World + chunk metadata API (GET/POST /api/world, GET /api/world/partials/chunks, PATCH /api/world/chunks/{id}). Forge UI World tab loads chunk grid from API; New World and Bake update state. Terrain SDF brushes, geo-importer, and real baking are TBD.
+
+### Engine Messaging for Instant Edits
+
+The World tab relies on the WASM viewer for latency-sensitive edits. New helper functions send lightweight binary commands:
+
+- `window.load_chunk(chunkId, x, z)` → `MessageType::LoadChunk` tells the renderer which 8 m cell to focus.
+- `window.translate_node(nodeId, dx, dy, dz)` → `MessageType::TranslateNode` moves a node in real time (used for grips/joints).
+- `window.update_joint(jointId, qx, qy, qz, qw)` → `MessageType::UpdateJoint` rotates characters’ bones without waiting for API round trips.
+
+The JS UI stays responsible for buttons, brush controls, and selection; the engine just renders the results of these commands.
+
+**Related:** [World and Chunks](../data/world-and-chunks.md) | [AI Pipeline](../workflows/ai-pipeline.md) | [Libraries](./forge-libraries.md)

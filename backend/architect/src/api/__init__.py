@@ -7,6 +7,7 @@ from .compile import router as compile_router
 from .websocket import router as websocket_router
 from .generate import router as generate_router
 from .library import router as library_router
+from .world import router as world_router
 
 from contextlib import asynccontextmanager
 from src.librarian import close_connections
@@ -48,4 +49,5 @@ app.include_router(assets_router, prefix="/api/assets", tags=["assets"])
 app.include_router(compile_router, prefix="/api/compile", tags=["compile"])
 app.include_router(generate_router, prefix="/api/generate", tags=["generate"])
 app.include_router(library_router, prefix="/api/library", tags=["library"])
+app.include_router(world_router, prefix="/api/world", tags=["world"])
 app.include_router(websocket_router, prefix="/ws", tags=["websocket"])

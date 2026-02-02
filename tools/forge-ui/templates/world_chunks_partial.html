@@ -1,0 +1,10 @@
+<div id="world-chunk-grid" class="chunk-grid">
+    {% for chunk in chunks %}
+    <button type="button" class="chunk-cell" data-chunk-id="{{ chunk.id }}" data-chunk-state="{{ chunk.state }}">
+        <span class="chunk-id">{{ chunk.id }}</span>
+        <span class="chunk-state chunk-state-{{ chunk.state }}">{{ chunk_state_labels[chunk.state] }}</span>
+    </button>
+    {% else %}
+    <p class="empty-state">No world. Create one below.</p>
+    {% endfor %}
+</div>

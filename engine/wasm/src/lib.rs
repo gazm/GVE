@@ -103,6 +103,16 @@ pub fn pick_view_cube(mouse_x: f32, mouse_y: f32) -> JsValue {
     JsValue::NULL
 }
 
+/// Move the camera instantly to an arbitrary position + orientation
+#[wasm_bindgen]
+pub fn snap_camera_to(pos_x: f32, pos_y: f32, pos_z: f32, yaw: f32, pitch: f32) {
+    if let Ok(mut engine_opt) = ENGINE.lock() {
+        if let Some(engine) = engine_opt.as_mut() {
+            engine.snap_camera_to([pos_x, pos_y, pos_z], yaw, pitch);
+        }
+    }
+}
+
 /// Toggle Axes visualization
 #[wasm_bindgen]
 pub fn toggle_axes() {

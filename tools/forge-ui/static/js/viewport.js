@@ -9,6 +9,10 @@ import { connectWebSocket } from './events.js';
 
 const wasmGetSceneSnapshot = gve_wasm.get_scene_snapshot || (() => new Uint8Array(0));
 
+const MSG_TYPE_LOAD_CHUNK = 0x30;
+const MSG_TYPE_TRANSLATE_NODE = 0x31;
+const MSG_TYPE_UPDATE_JOINT = 0x32;
+
 
 
 let wasmEngineInitialized = false;
@@ -43,6 +47,14 @@ window.clear_sdf = () => {
         return;
     }
     gve_wasm.clear_sdf();
+};
+
+window.snap_camera_to = (x, y, z, yaw, pitch) => {
+    if (!wasmEngineInitialized) {
+        console.warn("WASM not ready");
+        return;
+    }
+    gve_wasm.snap_camera_to(x, y, z, yaw, pitch);
 };
 
 window.clear_viewport = () => {
@@ -147,6 +159,41 @@ function sendMessageRaw(type, payload, assetId, version) {
 
     gve_wasm.handle_message(msg);
 }
+
+function sendEngineCommand(type, payload) {
+    const zeroAsset = 0n;
+    sendMessageRaw(type, payload, zeroAsset, 1);
+}
+
+window.load_chunk = (chunkId, x, z) => {
+    const buffer = new ArrayBuffer(16);
+    const view = new DataView(buffer);
+    view.setBigUint64(0, assetIdToNumeric(chunkId), true);
+    view.setInt32(8, x, true);
+    view.setInt32(12, z, true);
+    sendEngineCommand(MSG_TYPE_LOAD_CHUNK, new Uint8Array(buffer));
+};
+
+window.translate_node = (nodeId, dx, dy, dz) => {
+    const buffer = new ArrayBuffer(20);
+    const view = new DataView(buffer);
+    view.setBigUint64(0, assetIdToNumeric(nodeId), true);
+    view.setFloat32(8, dx, true);
+    view.setFloat32(12, dy, true);
+    view.setFloat32(16, dz, true);
+    sendEngineCommand(MSG_TYPE_TRANSLATE_NODE, new Uint8Array(buffer));
+};
+
+window.update_joint = (jointId, qx, qy, qz, qw) => {
+    const buffer = new ArrayBuffer(24);
+    const view = new DataView(buffer);
+    view.setBigUint64(0, assetIdToNumeric(jointId), true);
+    view.setFloat32(8, qx, true);
+    view.setFloat32(12, qy, true);
+    view.setFloat32(16, qz, true);
+    view.setFloat32(20, qw, true);
+    sendEngineCommand(MSG_TYPE_UPDATE_JOINT, new Uint8Array(buffer));
+};
 
 export async function initViewport(canvasId) {
     // Prevent duplicate initialization (WASM engine is a singleton)
@@ -488,8 +535,31 @@ export async function initViewport(canvasId) {
             if (moved) sendCameraUpdate();
         }
 
-        requestAnimationFrame(inputLoop);
+    requestAnimationFrame(inputLoop);
+
+    function initViewcubeOverlay() {
+        document.querySelectorAll('.viewcube-overlay').forEach((overlay) => {
+            overlay.addEventListener('click', (event) => {
+                const button = event.target.closest('.viewcube-face');
+                if (!button) return;
+                const yaw = parseFloat(button.dataset.yaw || 0);
+                const pitch = parseFloat(button.dataset.pitch || 0);
+                if (window.snap_camera_to) {
+                    window.snap_camera_to(camera.pos[0], camera.pos[1], camera.pos[2], yaw, pitch);
+                }
+                setViewcubeActive(button.dataset.face);
+            });
+        });
     }
+
+    function setViewcubeActive(face) {
+        document.querySelectorAll('.viewcube-face').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.face === face);
+        });
+    }
+
+    initViewcubeOverlay();
+}
     requestAnimationFrame(inputLoop);
 
 }
