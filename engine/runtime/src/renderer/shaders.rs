@@ -11,6 +11,7 @@ pub const SDF_SHADER: &str = r#"
 // Uniforms for camera and SDF parameters
 struct SDFUniforms {
     inv_view_proj: mat4x4<f32>,
+    view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
     time: f32,
     resolution: vec2<f32>,
@@ -54,10 +55,10 @@ fn sdf_box(p: vec3<f32>, center: vec3<f32>, size: vec3<f32>) -> f32 {
     return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
-// Vertical Cylinder - exact
+// Z-axis Cylinder - exact (aligned with forward/barrel direction)
 fn sdf_cylinder(p: vec3<f32>, center: vec3<f32>, radius: f32, height: f32) -> f32 {
     let q = p - center;
-    let d = abs(vec2<f32>(length(q.xz), q.y)) - vec2<f32>(radius, height);
+    let d = abs(vec2<f32>(length(q.xy), q.z)) - vec2<f32>(radius, height);
     return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
 }
 
@@ -87,17 +88,172 @@ fn sdf_round_box(p: vec3<f32>, center: vec3<f32>, size: vec3<f32>, r: f32) -> f3
     return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 }
 
-// Cone (vertical) - exact
+// Revolution - Y-axis solid of revolution (box cross-section approximation)
+fn sdf_revolution(p: vec3<f32>, center: vec3<f32>, offset: f32, profile_w: f32, profile_h: f32) -> f32 {
+    let q = p - center;
+    let radial = length(q.xz) - offset;
+    let d = vec2<f32>(abs(radial) - profile_w, abs(q.y) - profile_h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
+}
+
+// =============================================================================
+// Voronoi Utilities (integer-arithmetic hash for GPU reproducibility)
+// =============================================================================
+
+fn hash33(p: vec3<f32>) -> vec3<f32> {
+    // Integer-arithmetic hash: deterministic, no sin() precision issues
+    var q = vec3<f32>(
+        dot(p, vec3<f32>(127.1, 311.7, 74.7)),
+        dot(p, vec3<f32>(269.5, 183.3, 246.1)),
+        dot(p, vec3<f32>(113.5, 271.9, 124.6))
+    );
+    return fract(sin(q) * 43758.5453);
+}
+
+fn voronoi_distance(p: vec3<f32>, cell_size: f32) -> f32 {
+    let scaled = p / cell_size;
+    let cell = floor(scaled);
+    var min_dist = 999.0;
+    
+    // 27-neighbor search (unrolled for WGSL performance)
+    for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var dz = -1; dz <= 1; dz++) {
+                let neighbor = cell + vec3<f32>(f32(dx), f32(dy), f32(dz));
+                let jitter = hash33(neighbor);
+                let center = (neighbor + jitter) * cell_size;
+                let d = length(p - center);
+                min_dist = min(min_dist, d);
+            }
+        }
+    }
+    return min_dist;
+}
+
+// =============================================================================
+// Fractal Primitives
+// =============================================================================
+
+// Mandelbulb - power-N 3D fractal (distance estimator)
+fn sdf_mandelbulb(p: vec3<f32>, center: vec3<f32>, scale: f32, power: f32, iters: u32) -> f32 {
+    let q = (p - center) / scale;
+    var z = q;
+    var dr = 1.0;
+    var r = 0.0;
+    
+    for (var i = 0u; i < 12u; i++) {
+        if (i >= iters) { break; }
+        r = length(z);
+        if (r > 2.0) { break; }
+        
+        // Spherical coordinates
+        let theta = acos(clamp(z.z / r, -1.0, 1.0));
+        let phi = atan2(z.y, z.x);
+        
+        dr = pow(r, power - 1.0) * power * dr + 1.0;
+        
+        // Power transform
+        let r_pow = pow(r, power);
+        let theta_n = theta * power;
+        let phi_n = phi * power;
+        
+        z = vec3<f32>(
+            sin(theta_n) * cos(phi_n),
+            sin(theta_n) * sin(phi_n),
+            cos(theta_n)
+        ) * r_pow + q;
+    }
+    
+    r = length(z);
+    return 0.5 * log(r) * r / dr * scale;
+}
+
+// Menger Sponge - recursive cross subtraction
+fn sdf_menger(p: vec3<f32>, center: vec3<f32>, scale: f32, iters: u32) -> f32 {
+    let q = abs((p - center) / scale);
+    var d = max(max(q.x, q.y), q.z) - 1.0;
+    
+    var s = 1.0;
+    for (var i = 0u; i < 5u; i++) {
+        if (i >= iters) { break; }
+        
+        let a = (q * s % vec3<f32>(2.0)) - vec3<f32>(1.0);
+        s *= 3.0;
+        let r = abs(1.0 - 3.0 * abs(a));
+        
+        let da = max(r.x, r.y);
+        let db = max(r.y, r.z);
+        let dc = max(r.x, r.z);
+        let c = (min(min(da, db), dc) - 1.0) / s;
+        
+        d = max(d, c);
+    }
+    
+    return d * scale;
+}
+
+// Julia Set (quaternion) - 3D fractal
+fn sdf_julia(p: vec3<f32>, center: vec3<f32>, scale: f32, c: vec4<f32>) -> f32 {
+    let q = (p - center) / scale;
+    var z = vec4<f32>(q, 0.0);
+    var dz = 1.0;
+    
+    for (var i = 0u; i < 12u; i++) {
+        let r = length(z);
+        if (r > 4.0) { break; }
+        
+        // Quaternion square: z*z + c
+        let a = z.x; let b = z.y; let cc = z.z; let d = z.w;
+        z = vec4<f32>(
+            a*a - b*b - cc*cc - d*d + c.x,
+            2.0*a*b + c.y,
+            2.0*a*cc + c.z,
+            2.0*a*d + c.w
+        );
+        dz = 2.0 * r * dz;
+    }
+    
+    let r = length(z);
+    return 0.5 * r * log(r) / dz * scale;
+}
+
+// Cone (Z-axis) - exact (aligned with forward direction)
 fn sdf_cone(p: vec3<f32>, center: vec3<f32>, height: f32, radius: f32) -> f32 {
     let q = p - center;
     let c = vec2<f32>(radius / height, -1.0);
-    let w = vec2<f32>(length(q.xz), q.y);
+    let w = vec2<f32>(length(q.xy), q.z);
     let a = w - c * clamp(dot(w, c) / dot(c, c), 0.0, 1.0);
     let b = w - c * vec2<f32>(clamp(w.x / c.x, 0.0, 1.0), 1.0);
     let k = sign(c.y);
     let d = min(dot(a, a), dot(b, b));
     let s = max(k * (w.x * c.y - w.y * c.x), k * (w.y - c.y));
     return sqrt(d) * sign(s);
+}
+
+// Wedge - box intersected with diagonal cutting plane
+// taper_axis shrinks from full-width to zero across taper_dir
+// taper_axis/taper_dir: 0=X, 1=Y, 2=Z
+fn sdf_wedge(p: vec3<f32>, center: vec3<f32>, size: vec3<f32>, taper_axis: u32, taper_dir: u32) -> f32 {
+    let q = p - center;
+    // Box SDF
+    let aq = abs(q) - size;
+    let box_d = length(max(aq, vec3<f32>(0.0))) + min(max(aq.x, max(aq.y, aq.z)), 0.0);
+    // Diagonal plane: allowed = size_tap * (1 - t), where t ∈ [0,1] along taper_dir
+    var dir_val: f32;
+    var size_dir: f32;
+    var tap_val: f32;
+    var size_tap: f32;
+    // Extract components by axis index
+    if taper_dir == 0u { dir_val = q.x; size_dir = size.x; }
+    else if taper_dir == 1u { dir_val = q.y; size_dir = size.y; }
+    else { dir_val = q.z; size_dir = size.z; }
+    if taper_axis == 0u { tap_val = q.x; size_tap = size.x; }
+    else if taper_axis == 1u { tap_val = q.y; size_tap = size.y; }
+    else { tap_val = q.z; size_tap = size.z; }
+    let t = clamp((dir_val + size_dir) / (2.0 * size_dir + 1e-8), 0.0, 1.0);
+    let allowed = size_tap * (1.0 - t);
+    let plane_d = abs(tap_val) - allowed;
+    return max(box_d, plane_d);
 }
 
 // =============================================================================
@@ -171,6 +327,23 @@ fn evaluate_sdf(p: vec3<f32>) -> f32 {
                 case 0x07u: { // Plane: normal.xyz, dist
                     d = sdf_plane(p, instr.params0.xyz, instr.params0.w);
                 }
+                case 0x08u: { // Revolution: center.xyz, offset, profile_w, profile_h
+                    d = sdf_revolution(p, center, instr.params0.w, instr.params1.x, instr.params1.y);
+                }
+                case 0x09u: { // Mandelbulb: center.xyz, scale, power, iterations
+                    d = sdf_mandelbulb(p, center, instr.params0.w, instr.params1.x, u32(instr.params1.y));
+                }
+                case 0x0Au: { // Menger Sponge: center.xyz, scale, iterations
+                    d = sdf_menger(p, center, instr.params0.w, u32(instr.params1.x));
+                }
+                case 0x0Bu: { // Julia Set: center.xyz, scale, c[4]
+                    let c = vec4<f32>(instr.params1.x, instr.params1.y, instr.params1.z, instr.params1.w);
+                    d = sdf_julia(p, center, instr.params0.w, c);
+                }
+                case 0x0Cu: { // Wedge: center.xyz, size.xyz, taper_axis, taper_dir
+                    let size = vec3(instr.params0.w, instr.params1.x, instr.params1.y);
+                    d = sdf_wedge(p, center, size, u32(instr.params1.z), u32(instr.params1.w));
+                }
                 default: {
                     d = 1e10;
                 }
@@ -191,6 +364,8 @@ fn evaluate_sdf(p: vec3<f32>) -> f32 {
                     case 0x11u: { result = sdf_subtract(a, b); }
                     case 0x12u: { result = sdf_intersect(a, b); }
                     case 0x13u: { result = sdf_smooth_union(a, b, 0.1); }
+                    case 0x14u: { result = sdf_smooth_subtract(a, b, 0.1); }
+                    case 0x15u: { result = sdf_smooth_intersect(a, b, 0.1); }
                     default: { result = a; }
                 }
                 
@@ -198,7 +373,37 @@ fn evaluate_sdf(p: vec3<f32>) -> f32 {
                 sp++;
             }
         }
-        // Modifiers would go here
+        else if instr.instr_type == 2u {
+            // Modifier - operates on the top of stack distance value
+            if sp >= 1u {
+                let child_d = stack[sp - 1u];
+                sp -= 1u;
+                
+                var result: f32 = child_d;
+                switch instr.op {
+                    case 0x23u: { // Round: subtract radius from distance
+                        result = child_d - instr.params0.x;
+                    }
+                    case 0x25u: { // Voronoi: cell_size, wall_thickness, mode
+                        let cell_size = instr.params0.x;
+                        let wall_thickness = instr.params0.y;
+                        let mode = u32(instr.params0.z);
+                        let vor_d = voronoi_distance(p, cell_size) - wall_thickness;
+                        if mode == 1u {
+                            result = max(child_d, vor_d);      // intersect
+                        } else {
+                            result = max(child_d, -vor_d);     // subtract (default)
+                        }
+                    }
+                    default: {
+                        result = child_d;
+                    }
+                }
+                
+                stack[sp] = result;
+                sp++;
+            }
+        }
     }
     
     if sp > 0u {
@@ -225,7 +430,13 @@ fn compute_normal(p: vec3<f32>) -> vec3<f32> {
 // =============================================================================
 // Sphere Tracing (Raymarching)
 // =============================================================================
-fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
+// Raymarch result: color + depth for frag_depth output
+struct RaymarchResult {
+    color: vec4<f32>,
+    depth: f32,        // clip-space depth (0..1), 1.0 = far/miss
+}
+
+fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RaymarchResult {
     var t = 0.001;  // Start slightly away from camera to avoid self-intersection
     let max_dist = 100.0;
     let max_steps = 128;
@@ -256,52 +467,95 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
         t += d * step_factor;
     }
     
+    var result: RaymarchResult;
+    
     if hit {
         let normal = compute_normal(hit_pos);
         
         // Validate normal (protect against NaN - NaN != NaN)
         var n = normal;
         let len = length(n);
-        if len < 0.5 || len != len {  // len != len detects NaN
+        if len < 0.5 || len != len {
             n = vec3<f32>(0.0, 1.0, 0.0);
         } else {
-            n = n / len;  // Normalize
+            n = n / len;
         }
         
-        // Lighting
-        let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
-        let n_dot_l = max(dot(n, light_dir), 0.0);
-        
-        // Ambient occlusion approximation
-        let ao = 0.5 + 0.5 * n.y;
-        
-        // Diffuse + ambient lighting
-        let ambient = 0.15;
-        let diffuse = n_dot_l * 0.85;
-        
-        // Base color from normal direction (makes shape readable)
+        // PBR lighting (SDF preview uses normal-based color + default material)
         let base_color = n * 0.5 + 0.5;
+        let metallic_val = 0.0;   // SDF preview: dielectric default
+        let roughness_val = 0.5;  // SDF preview: moderate roughness
+
+        let V = normalize(uniforms.camera_pos - hit_pos);
+        let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+
+        let H = normalize(V + light_dir);
+        let NdotL = max(dot(n, light_dir), 0.0);
+        let NdotV = max(dot(n, V), 0.001);
+        let NdotH = max(dot(n, H), 0.0);
+        let HdotV = max(dot(H, V), 0.0);
+
+        // GGX specular
+        let a = roughness_val * roughness_val;
+        let a2 = a * a;
+        let d_term = NdotH * NdotH * (a2 - 1.0) + 1.0;
+        let D = a2 / (3.14159 * d_term * d_term + 0.0001);
+
+        let r_k = roughness_val + 1.0;
+        let k = (r_k * r_k) / 8.0;
+        let G1v = NdotV / (NdotV * (1.0 - k) + k + 0.0001);
+        let G1l = NdotL / (NdotL * (1.0 - k) + k + 0.0001);
+        let G = G1v * G1l;
+
+        let F0 = mix(vec3<f32>(0.04), base_color, metallic_val);
+        let F = F0 + (vec3<f32>(1.0) - F0) * pow(clamp(1.0 - HdotV, 0.0, 1.0), 5.0);
+
+        let specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+        let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic_val);
+        let diffuse = kD * base_color / 3.14159;
+
+        let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.5;
+        let Lo = (diffuse + specular) * light_col * NdotL;
+
+        // Ambient occlusion + hemisphere ambient
+        let ao = 0.5 + 0.5 * n.y;
+        let ambient = mix(vec3<f32>(0.06, 0.05, 0.04), vec3<f32>(0.12, 0.14, 0.18), n.y * 0.5 + 0.5) * base_color;
+        let color = (Lo + ambient) * ao;
+
+        // Tonemap (Reinhard) + gamma
+        let mapped = color / (color + vec3<f32>(1.0));
+        let gamma_out = pow(mapped, vec3<f32>(1.0 / 2.2));
+
+        result.color = vec4<f32>(gamma_out, 1.0);
         
-        // Final color
-        let lit_color = base_color * (ambient + diffuse) * ao;
-        
-        return vec4<f32>(lit_color, 1.0);
+        // Project hit position to clip space for depth buffer
+        let clip = uniforms.view_proj * vec4<f32>(hit_pos, 1.0);
+        result.depth = clip.z / clip.w;
+    } else {
+        // Sky gradient for miss
+        let sky_t = rd.y * 0.5 + 0.5;
+        let sky_color = mix(
+            vec3<f32>(0.1, 0.12, 0.15),  // Horizon
+            vec3<f32>(0.15, 0.2, 0.3),   // Zenith
+            sky_t
+        );
+        result.color = vec4<f32>(sky_color, 1.0);
+        result.depth = 1.0;  // Far plane for sky
     }
     
-    // Sky gradient for miss
-    let sky_t = rd.y * 0.5 + 0.5;
-    let sky_color = mix(
-        vec3<f32>(0.1, 0.12, 0.15),  // Horizon
-        vec3<f32>(0.15, 0.2, 0.3),   // Zenith
-        sky_t
-    );
-    return vec4<f32>(sky_color, 1.0);
+    return result;
 }
 
 // Fullscreen quad vertex shader
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+}
+
+// Fragment output with depth
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
 }
 
 @vertex
@@ -315,7 +569,7 @@ fn vs_fullscreen(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
 }
 
 @fragment
-fn fs_sdf(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_sdf(in: VertexOutput) -> FragOutput {
     let ndc = in.uv;
     
     // Reconstruct ray direction using inverse view-projection
@@ -326,7 +580,12 @@ fn fs_sdf(in: VertexOutput) -> @location(0) vec4<f32> {
     let ray_origin = near_point.xyz / near_point.w;
     let ray_dir = normalize(far_point.xyz / far_point.w - ray_origin);
     
-    return raymarch(ray_origin, ray_dir);
+    let result = raymarch(ray_origin, ray_dir);
+    
+    var out: FragOutput;
+    out.color = result.color;
+    out.depth = result.depth;
+    return out;
 }
 "#;
 
@@ -357,19 +616,29 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = uniforms.mvp * vec4<f32>(in.position, 1.0);
     out.normal = in.normal;
-    // Simple normal-based coloring (hemisphere lighting)
     out.color = in.normal * 0.5 + 0.5;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Simple directional lighting
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
     let n = normalize(in.normal);
-    let diffuse = max(dot(n, light_dir), 0.0);
-    let ambient = 0.2;
-    let lit_color = in.color * (ambient + diffuse * 0.8);
-    return vec4<f32>(lit_color, 1.0);
+    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+    let NdotL = max(dot(n, light_dir), 0.0);
+
+    // Simple Blinn-Phong for mesh preview (no camera_pos in mesh uniforms)
+    let diffuse = NdotL * 0.75;
+    let ambient = mix(vec3<f32>(0.08, 0.07, 0.06), vec3<f32>(0.14, 0.16, 0.20), n.y * 0.5 + 0.5);
+    let ao = 0.5 + 0.5 * n.y;
+    let lit_color = (in.color * diffuse + ambient) * ao;
+
+    // Tonemap + gamma
+    let mapped = lit_color / (lit_color + vec3<f32>(1.0));
+    let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
+    return vec4<f32>(gamma, 1.0);
 }
 "#;
+
+// Splat and Volume shaders moved to shaders_extra.rs for file size management.
+// Re-export for backward compatibility.
+pub use super::shaders_extra::{SPLAT_SHADER, VOLUME_SHADER};

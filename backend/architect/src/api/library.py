@@ -2,72 +2,81 @@
 Library API endpoints for forge-ui component browser.
 
 Maps existing assets collection to library categories for the frontend.
+Tag filtering pushed to MongoDB via librarian.list_assets_by_tags().
 """
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse
-from typing import List, Optional
-from src.librarian import list_assets, search_assets
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from src.librarian import list_assets, list_assets_by_tags, search_assets
 from .templates import templates
 
 router = APIRouter()
 
-# Library type icons for rendering
-LIBRARY_ICONS = {
-    "geometry": "◇",
-    "materials": "◈", 
-    "textures": "▦",
-    "audio": "♫",
-    "recipes": "▣",
+# Tag sets that define each library category (used for DB-level filtering)
+LIBRARY_TAG_FILTERS: dict[str, list[str]] = {
+    "materials": ["metal", "wood", "stone", "plastic", "fabric"],
+    "textures": ["texture", "pbr", "albedo", "normal"],
+    "audio": ["audio", "sound", "impact", "ambient"],
 }
 
-# Helper functions removed in favor of Jinja2 templates (library_grid.html)
+# Library categories with descriptions
+LIBRARY_CATEGORIES = {
+    "geometry": {"icon": "◇", "description": "SDF geometry components"},
+    "materials": {"icon": "◈", "description": "Physics material specs"},
+    "textures": {"icon": "▦", "description": "PBR texture maps"},
+    "audio": {"icon": "♫", "description": "DSP audio patches"},
+    "recipes": {"icon": "▣", "description": "Complete asset templates"},
+}
 
 
-async def get_library_items(library_type: str, limit: int = 50) -> list:
+def _asset_to_item(asset) -> dict:
+    """Convert an AssetMetadata to a library item dict."""
+    return {
+        "id": asset.id,
+        "name": asset.name,
+        "tags": asset.tags,
+        "category": asset.category.value.lower() if hasattr(asset.category, "value") else str(asset.category).lower(),
+        "rating": 4,  # TODO: Add rating field to AssetMetadata
+        "usage_count": asset.version,
+        "cost": 0,
+        "thumbnail_url": getattr(asset, "thumbnail_url", None),
+    }
+
+
+@router.get("/", response_class=JSONResponse)
+async def get_library_root():
+    """Get library API summary with available categories."""
+    return {
+        "status": "ok",
+        "categories": LIBRARY_CATEGORIES,
+        "endpoints": {
+            "geometry": "/api/library/geometry",
+            "materials": "/api/library/materials",
+            "textures": "/api/library/textures",
+            "audio": "/api/library/audio",
+            "recipes": "/api/library/recipes",
+            "search": "/api/library/search?q=<query>&type=<category>",
+        }
+    }
+
+
+async def get_library_items(library_type: str, limit: int = 50) -> list[dict]:
     """
     Fetch library items from database.
-    
-    Currently maps all asset categories to library types.
-    Future: separate collections per library type.
+
+    For categories with tag filters (materials, textures, audio) the filtering
+    is done in MongoDB via ``list_assets_by_tags``.  Geometry and recipes
+    return all non-draft assets.
     """
-    assets = await list_assets(limit=limit)
-    
-    items = []
-    for asset in assets:
-        # Map asset to library item format
-        category = asset.category.value.lower() if hasattr(asset.category, 'value') else str(asset.category).lower()
-        
-        # Filter by library type
-        if library_type == "geometry":
-            # All assets have geometry (SDF trees)
-            pass
-        elif library_type == "materials":
-            # Filter to assets with material tags
-            if not any(t in asset.tags for t in ["metal", "wood", "stone", "plastic", "fabric"]):
-                continue
-        elif library_type == "textures":
-            # Filter to assets with texture/pbr tags  
-            if not any(t in asset.tags for t in ["texture", "pbr", "albedo", "normal"]):
-                continue
-        elif library_type == "audio":
-            # Filter to assets with audio tags
-            if not any(t in asset.tags for t in ["audio", "sound", "impact", "ambient"]):
-                continue
-        elif library_type == "recipes":
-            # Recipes are complete asset templates
-            pass
-        
-        items.append({
-            "id": asset.id,
-            "name": asset.name,
-            "tags": asset.tags,
-            "category": category,
-            "rating": 4,  # TODO: Add rating field to AssetMetadata
-            "usage_count": asset.version,
-            "cost": 0,  # Library items are free
-        })
-    
-    return items
+    tag_filter = LIBRARY_TAG_FILTERS.get(library_type)
+
+    if tag_filter:
+        assets = await list_assets_by_tags(tags=tag_filter, limit=limit)
+    else:
+        # geometry / recipes — all assets qualify
+        assets = await list_assets(limit=limit)
+
+    return [_asset_to_item(a) for a in assets]
 
 
 @router.get("/geometry", response_class=HTMLResponse)
@@ -112,31 +121,22 @@ async def search_library(
     type: str = Query(default="geometry"),
     tags: str = Query(default=""),
 ):
-    """
-    Search library items by name and tags.
-    """
-    # Parse tags
+    """Search library items by name and/or tags (filtering in MongoDB)."""
     active_tags = [t.strip() for t in tags.split(",") if t.strip()]
-    
-    # Get base items
-    if q:
-        # Search by name
-        assets = await search_assets(q)
-        items = [{
-            "id": a.id,
-            "name": a.name,
-            "tags": a.tags,
-            "category": a.category.value.lower() if hasattr(a.category, 'value') else str(a.category).lower(),
-            "rating": 4,
-            "usage_count": a.version,
-            "cost": 0,
-            "thumbnail_url": a.thumbnail_url # key fix: ensure thumbnail URL is passed
-        } for a in assets]
+
+    if q and active_tags:
+        # Name search + tag filter: search first, then filter client-side
+        # (search_assets doesn't support combined tag queries yet)
+        assets = await search_assets(q, limit=50)
+        items = [_asset_to_item(a) for a in assets]
+        items = [i for i in items if any(t in i.get("tags", []) for t in active_tags)]
+    elif q:
+        assets = await search_assets(q, limit=50)
+        items = [_asset_to_item(a) for a in assets]
+    elif active_tags:
+        assets = await list_assets_by_tags(tags=active_tags, limit=50)
+        items = [_asset_to_item(a) for a in assets]
     else:
         items = await get_library_items(type)
-    
-    # Filter by tags if provided
-    if active_tags:
-        items = [i for i in items if any(t in i.get("tags", []) for t in active_tags)]
-    
+
     return templates.TemplateResponse("library_grid.html", {"request": request, "items": items, "library_type": type})

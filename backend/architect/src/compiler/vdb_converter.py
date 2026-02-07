@@ -1,22 +1,45 @@
+"""
+VDB and Dense Grid conversion for SDF baking.
+
+Converts PyTorch SDF functions to:
+- VDB volumes (for mesh extraction via MeshLib)
+- Dense grids (for GPU raymarching in WebGPU)
+"""
+import struct
 import torch
 import numpy as np
 import meshlib.mrmeshpy as mrmesh
 import tempfile
 import os
+from dataclasses import dataclass
+from typing import Tuple, Optional
 
-def bake_sdf_to_vdb(
+
+@dataclass
+class BakeResult:
+    """Result of SDF baking containing both VDB and dense grid data."""
+    vdb_volume: mrmesh.VdbVolume
+    dense_grid: np.ndarray  # Shape: (X, Y, Z), dtype: float32
+    dims: Tuple[int, int, int]
+    bounds_min: Tuple[float, float, float]
+    bounds_max: Tuple[float, float, float]
+    voxel_size: float
+
+
+def bake_sdf(
     sdf_fn,
     bounds_min: tuple[float, float, float] = (-1.0, -1.0, -1.0),
     bounds_max: tuple[float, float, float] = (1.0, 1.0, 1.0),
     voxel_size: float = 0.04
-) -> mrmesh.VdbVolume:
+) -> BakeResult:
     """
-    Bake a PyTorch SDF function into a sparse OpenVDB volume via batched evaluation.
+    Bake a PyTorch SDF function into both VDB and dense grid.
     
-    PERFORMANCE: Uses batched PyTorch evaluation (50-100x faster than per-voxel callback).
-    - Generates ALL voxel coordinates at once
-    - Single PyTorch forward pass for ALL voxels
-    - Writes to SimpleVolumeMinMax (dense), converts to VdbVolume (sparse)
+    Returns BakeResult containing:
+    - vdb_volume: For mesh extraction
+    - dense_grid: For GPU raymarching (WebGPU 3D texture)
+    
+    PERFORMANCE: Uses batched PyTorch evaluation (50-100x faster than per-voxel).
     """
     # 1. Calculate grid dimensions
     b_min = np.array(bounds_min, dtype=np.float32)
@@ -52,52 +75,116 @@ def bake_sdf_to_vdb(
     with torch.no_grad():
         distances = sdf_fn(coords)  # ONE PyTorch call for ALL voxels!
     
-    # 4. Reshape to 3D grid
-    distance_grid = distances.reshape(res[0], res[1], res[2]).cpu().numpy()
-    value_min = float(distance_grid.min())
-    value_max = float(distance_grid.max())
+    # 4. Reshape to 3D grid (keep original SDF sign for raymarching)
+    # Note: We store the TRUE SDF (negative = inside) for raymarching
+    distance_grid_sdf = distances.reshape(res[0], res[1], res[2]).cpu().numpy().astype(np.float32)
+    
+    # For MeshLib, we need inverted sign (positive = inside)
+    distance_grid_meshlib = -distance_grid_sdf
+    value_min = float(distance_grid_meshlib.min())
+    value_max = float(distance_grid_meshlib.max())
     
     # 5. Create MeshLib SimpleVolumeMinMax (dense storage)
     simple_vol = mrmesh.SimpleVolumeMinMax()
     simple_vol.dims = mrmesh.Vector3i(int(res[0]), int(res[1]), int(res[2]))
     simple_vol.voxelSize = mrmesh.Vector3f(voxel_size, voxel_size, voxel_size)
     
-    # Copy distance data to SimpleVolumeMinMax
-    # SimpleVolumeMinMax.data is a flat vector - copy in C-order (row-major)
-    # Note: min/max properties are READ-ONLY and computed automatically from data
-    flat_data = distance_grid.flatten('C').astype(np.float32)
+    # X-fastest ordering for MeshLib
+    flat_data = distance_grid_meshlib.flatten('F').astype(np.float32)
     simple_vol.data = mrmesh.std_vector_float(flat_data.tolist())
-    # SimpleVolumeMinMax expects min/max to be set to the value range
     simple_vol.min = value_min
     simple_vol.max = value_max
     
     total_voxels = int(res[0] * res[1] * res[2])
-    print(f"    SimpleVolumeMinMax created with {total_voxels:,} voxels (value range: {value_min:.3f} to {value_max:.3f})", flush=True)
+    print(f"    SimpleVolumeMinMax created with {total_voxels:,} voxels", flush=True)
     
     # 6. Convert SimpleVolumeMinMax to sparse VdbVolume
     print(f"    Converting to sparse VDB...", flush=True)
     vdb_volume = mrmesh.simpleVolumeToVdbVolume(simple_vol)
     print(f"    ✅ VDB conversion complete", flush=True)
     
-    return vdb_volume
+    return BakeResult(
+        vdb_volume=vdb_volume,
+        dense_grid=distance_grid_sdf,  # True SDF for raymarching
+        dims=(int(res[0]), int(res[1]), int(res[2])),
+        bounds_min=tuple(b_min.tolist()),
+        bounds_max=tuple(b_max.tolist()),
+        voxel_size=voxel_size,
+    )
+
+
+def bake_sdf_to_vdb(
+    sdf_fn,
+    bounds_min: tuple[float, float, float] = (-1.0, -1.0, -1.0),
+    bounds_max: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    voxel_size: float = 0.04
+) -> mrmesh.VdbVolume:
+    """
+    Bake a PyTorch SDF function into a sparse OpenVDB volume.
+    
+    Backwards-compatible wrapper around bake_sdf().
+    """
+    result = bake_sdf(sdf_fn, bounds_min, bounds_max, voxel_size)
+    return result.vdb_volume
 
 def vdb_to_bytes(grid: mrmesh.VdbVolume) -> bytes:
-    """
-    Serialize MeshLib VDB volume to .vdb bytes.
-    """
+    """Serialize MeshLib VDB volume to .vdb bytes."""
     with tempfile.NamedTemporaryFile(suffix=".vdb", delete=False) as tmp:
         tmp_name = tmp.name
     
     try:
-        # saveVoxels(file, object)
-        # saveVoxels(object, file) based on signature
         mrmesh.saveVoxels(grid, tmp_name)
-        
         with open(tmp_name, "rb") as f:
             data = f.read()
-            
         return data
-        
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
+
+
+def dense_grid_to_bytes(bake_result: BakeResult, compress: bool = True) -> bytes:
+    """
+    Serialize dense grid for GPU raymarching with LZ4 compression.
+    
+    Binary format (little-endian):
+    - dims: [u32; 3]             (12 bytes) - Grid dimensions
+    - bounds_min: [f32; 3]       (12 bytes) - World-space min corner  
+    - bounds_max: [f32; 3]       (12 bytes) - World-space max corner
+    - uncompressed_size: u32     (4 bytes)  - Original voxel data size
+    - compressed_data: [u8; N]   (variable) - LZ4 compressed voxels
+    
+    Total header: 40 bytes (before compressed data)
+    
+    SDF data compresses well (smooth gradients) - expect 5-10x compression.
+    """
+    import lz4.block
+    
+    dims = bake_result.dims
+    b_min = bake_result.bounds_min
+    b_max = bake_result.bounds_max
+    
+    # Flatten grid to X-fastest order (Fortran/column-major) for GPU
+    voxels_raw = bake_result.dense_grid.flatten('F').astype(np.float32).tobytes()
+    uncompressed_size = len(voxels_raw)
+    
+    if compress:
+        # LZ4 block compression - store_size=False to output raw LZ4 block (no 4-byte size prefix)
+        # Rust lz4_flex expects raw block data
+        compressed = lz4.block.compress(voxels_raw, mode='high_compression', store_size=False)
+        ratio = uncompressed_size / len(compressed)
+        print(f"    Dense grid: {dims[0]}x{dims[1]}x{dims[2]}, {uncompressed_size} -> {len(compressed)} bytes ({ratio:.1f}x compression)", flush=True)
+        voxels_data = compressed
+    else:
+        print(f"    Dense grid: {dims[0]}x{dims[1]}x{dims[2]} = {uncompressed_size} bytes (uncompressed)", flush=True)
+        voxels_data = voxels_raw
+    
+    # Pack header: 3x u32 dims + 3x f32 bounds_min + 3x f32 bounds_max + u32 uncompressed_size
+    header = struct.pack(
+        "<III fff fff I",
+        dims[0], dims[1], dims[2],
+        b_min[0], b_min[1], b_min[2],
+        b_max[0], b_max[1], b_max[2],
+        uncompressed_size,
+    )
+    
+    return header + voxels_data

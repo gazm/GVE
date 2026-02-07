@@ -1,123 +1,44 @@
 # backend/architect/src/api/generate.py
 """
-AI Generation API endpoints.
+AI Generation API route handlers.
 
-Handles asset generation requests via the AI pipeline.
-All LLM calls run as background tasks (per module anti-patterns).
+Two-Phase Generation Flow:
+1. POST /concept - Generate concept image (fast)
+2. User reviews concept image
+3. POST /concept/{job_id}/approve - Proceed to 3D generation
+   OR POST /concept/{job_id}/regenerate - Try again with feedback
+
+Stage Previews:
+- During 3D generation, previews are sent via WebSocket after each stage
+- Previews available at GET /api/generate/preview/{preview_id}
+
+Schemas live in generate_schemas.py, background tasks in generate_tasks.py.
 """
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+
+from .generate_schemas import (
+    GenerateRequestAPI, GenerateJobResponse, GenerateStatusResponse,
+    EstimateRequest, EstimateResponse, MaterialSuggestion,
+    ConceptRequestAPI, ConceptJobResponse, ConceptStatusResponse,
+    ConceptApproveRequest, ConceptApproveResponse,
+    ConceptRegenerateRequest,
+)
+from .generate_tasks import (
+    jobs, concept_jobs, stage_previews,
+    run_concept_generation, run_generation, run_generation_with_concept,
+)
 
 router = APIRouter()
 
-# In-memory job tracking (use Redis in production)
-_jobs: dict[str, dict[str, Any]] = {}
 
-
-class GenerateRequestAPI(BaseModel):
-    """API request to generate an asset."""
-    
-    prompt: str
-    category: str | None = None
-    style_reference: str | None = None
-    track_override: str | None = None  # "matter", "landscape", "audio"
-
-class GenerateJobResponse(BaseModel):
-    """Response with job ID for tracking."""
-    
-    job_id: str
-    status: str
-
-
-class GenerateStatusResponse(BaseModel):
-    """Status of a generation job."""
-    
-    job_id: str
-    status: str  # "queued", "running", "completed", "failed"
-    asset_id: str | None = None
-    result: dict | None = None
-    error: str | None = None
-
-
-class EstimateRequest(BaseModel):
-    """Request for cost/time estimate."""
-    
-    category: str
-    styles: list[str] = []
-    prompt_length: int = 0
-
-
-class EstimateResponse(BaseModel):
-    """Cost and time estimate for generation."""
-    
-    cost_usd: float
-    estimated_time_sec: int
-    category: str
-
-
-class MaterialSuggestion(BaseModel):
-    """Material suggestion response."""
-    
-    materials: list[str]
-
-
-async def _run_generation(job_id: str, request: GenerateRequestAPI) -> None:
-    """
-    Background task to run AI generation.
-    
-    Updates job status in _jobs dict.
-    """
-    import traceback
-    
-    from ..ai_pipeline import generate_asset, GenerateRequest
-    from ..ai_pipeline.orchestrator import GenerationTrack
-    
-    print(f"[*] Starting generation job {job_id}...")
-    _jobs[job_id]["status"] = "running"
-    
-    try:
-        # Convert API request to internal request
-        track = None
-        if request.track_override:
-            track = GenerationTrack(request.track_override)
-        
-        internal_request = GenerateRequest(
-            prompt=request.prompt,
-            category=request.category,
-            style_reference=request.style_reference,
-            track_override=track,
-        )
-        
-        print(f"[*] Job {job_id}: Calling generate_asset...")
-        # Run generation
-        result = await generate_asset(internal_request)
-        
-        # Store result
-        _jobs[job_id]["status"] = "completed"
-        _jobs[job_id]["asset_id"] = result.asset_id
-        _jobs[job_id]["result"] = {
-            "asset_id": result.asset_id,
-            "confidence": result.confidence,
-            "generation_time_sec": result.generation_time_sec,
-            "track_used": result.track_used.value,
-        }
-        
-        print(f"[+] Generation job {job_id} completed: {result.asset_id}")
-        
-    except Exception as e:
-        _jobs[job_id]["status"] = "failed"
-        _jobs[job_id]["error"] = str(e)
-        error_trace = traceback.format_exc()
-        print(f"[-] Generation job {job_id} failed: {e}")
-        print(f"[-] Traceback:\n{error_trace}")
-
+# =============================================================================
+# Generation Endpoints
+# =============================================================================
 
 @router.post("/", response_model=GenerateJobResponse)
 async def create_generation(
@@ -129,9 +50,8 @@ async def create_generation(
     
     Generation runs in background - poll /status/{job_id} for result.
     """
-    # Create job
     job_id = str(uuid.uuid4())[:8]
-    _jobs[job_id] = {
+    jobs[job_id] = {
         "status": "queued",
         "request": request.model_dump(),
         "asset_id": None,
@@ -139,11 +59,9 @@ async def create_generation(
         "error": None,
     }
     
-    # FastAPI BackgroundTasks handles async functions directly
-    # It will run them in the background after the response is sent
-    background_tasks.add_task(_run_generation, job_id, request)
+    background_tasks.add_task(run_generation, job_id, request)
     
-    print(f"[*] Queued generation job {job_id}: {request.prompt[:50]}...")
+    print(f"📥 [*] Queued generation job {job_id}: {request.prompt[:50]}...")
     
     return GenerateJobResponse(job_id=job_id, status="queued")
 
@@ -151,10 +69,10 @@ async def create_generation(
 @router.get("/status/{job_id}", response_model=GenerateStatusResponse)
 async def get_generation_status(job_id: str):
     """Get the status of a generation job."""
-    if job_id not in _jobs:
+    if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    job = _jobs[job_id]
+    job = jobs[job_id]
     return GenerateStatusResponse(
         job_id=job_id,
         status=job["status"],
@@ -173,18 +91,17 @@ async def list_jobs():
             "prompt": job["request"]["prompt"][:50] + "...",
             "error": job.get("error"),
         }
-        for job_id, job in _jobs.items()
+        for job_id, job in jobs.items()
     }
 
 
 @router.get("/debug/{job_id}")
 async def debug_job(job_id: str):
     """Debug endpoint to see full job state."""
-    if job_id not in _jobs:
+    if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    job = _jobs[job_id].copy()
-    # Remove non-serializable task object
+    job = jobs[job_id].copy()
     job.pop("_task", None)
     return job
 
@@ -196,7 +113,6 @@ async def estimate_generation_cost(request: EstimateRequest):
     
     Pricing logic based on category complexity and style count.
     """
-    # Base cost by category
     base_costs = {
         "prop": 0.02,
         "weapon": 0.04,
@@ -206,16 +122,9 @@ async def estimate_generation_cost(request: EstimateRequest):
     }
     
     base_cost = base_costs.get(request.category.lower(), 0.02)
-    
-    # Add cost for styles (each style adds complexity)
     style_cost = len(request.styles) * 0.01
-    
-    # Add cost for long prompts (more detail = more processing)
     prompt_cost = 0.01 if request.prompt_length > 50 else 0.0
-    
     total_cost = base_cost + style_cost + prompt_cost
-    
-    # Estimate time (roughly 50 seconds per $1 of cost, minimum 2 seconds)
     estimated_time = max(2, int(2 + (total_cost * 50)))
     
     return EstimateResponse(
@@ -234,39 +143,293 @@ async def suggest_materials(prompt: str):
     In production, this could use an LLM or material database.
     """
     prompt_lower = prompt.lower()
-    materials = []
+    materials: list[str] = []
     
-    # Keyword-based material suggestions
-    if any(word in prompt_lower for word in ['metal', 'steel', 'iron', 'gun', 'weapon']):
-        materials.extend(['steel', 'aluminum'])
+    keyword_map: dict[tuple[str, ...], list[str]] = {
+        ("metal", "steel", "iron", "gun", "weapon"): ["steel", "aluminum"],
+        ("wood", "wooden", "stock", "handle"): ["oak", "walnut"],
+        ("rust", "worn", "old", "weathered"): ["rusted steel"],
+        ("plastic", "polymer", "synthetic"): ["ABS plastic"],
+        ("stone", "concrete", "rock"): ["concrete"],
+        ("glass", "transparent", "clear"): ["glass"],
+        ("fabric", "cloth", "textile"): ["cotton"],
+        ("leather", "hide"): ["leather"],
+    }
     
-    if any(word in prompt_lower for word in ['wood', 'wooden', 'stock', 'handle']):
-        materials.extend(['oak', 'walnut'])
+    for keywords, mats in keyword_map.items():
+        if any(word in prompt_lower for word in keywords):
+            materials.extend(mats)
     
-    if any(word in prompt_lower for word in ['rust', 'worn', 'old', 'weathered']):
-        materials.append('rusted steel')
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    unique = [m for m in materials if not (m in seen or seen.add(m))]  # type: ignore[func-returns-value]
     
-    if any(word in prompt_lower for word in ['plastic', 'polymer', 'synthetic']):
-        materials.append('ABS plastic')
+    return MaterialSuggestion(materials=unique)
+
+
+# =============================================================================
+# Stage Preview Endpoints
+# =============================================================================
+
+@router.get("/preview/{preview_id}")
+async def get_stage_preview(preview_id: str):
+    """
+    Serve intermediate stage preview binary (.gve_bin format).
     
-    if any(word in prompt_lower for word in ['stone', 'concrete', 'rock']):
-        materials.append('concrete')
+    Preview IDs are in format: {job_id}_stage_{stage_name}
+    Previews are cached for 5 minutes after generation.
+    """
+    binary_data = stage_previews.get(preview_id)
     
-    if any(word in prompt_lower for word in ['glass', 'transparent', 'clear']):
-        materials.append('glass')
+    if not binary_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Preview not found or expired: {preview_id}"
+        )
     
-    if any(word in prompt_lower for word in ['fabric', 'cloth', 'textile']):
-        materials.append('cotton')
+    return Response(
+        content=binary_data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"inline; filename={preview_id}.gve_bin",
+            "Cache-Control": "no-cache",
+        }
+    )
+
+
+@router.get("/preview/{preview_id}/info")
+async def get_stage_preview_info(preview_id: str):
+    """Get metadata about a stage preview without downloading the binary."""
+    binary_data = stage_previews.get(preview_id)
     
-    if any(word in prompt_lower for word in ['leather', 'hide']):
-        materials.append('leather')
+    if not binary_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Preview not found or expired: {preview_id}"
+        )
     
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_materials = []
-    for m in materials:
-        if m not in seen:
-            seen.add(m)
-            unique_materials.append(m)
+    parts = preview_id.rsplit("_stage_", 1)
+    job_id = parts[0] if len(parts) > 0 else None
+    stage = parts[1] if len(parts) > 1 else None
     
-    return MaterialSuggestion(materials=unique_materials)
+    return {
+        "preview_id": preview_id,
+        "job_id": job_id,
+        "stage": stage,
+        "size_bytes": len(binary_data),
+    }
+
+
+# =============================================================================
+# Concept Image Endpoints (Two-Phase Workflow)
+# =============================================================================
+
+@router.post("/concept", response_model=ConceptJobResponse)
+async def create_concept(
+    request: ConceptRequestAPI,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Start a concept image generation job.
+    
+    This is Phase 1 of the two-phase generation workflow.
+    After concept is ready, user can approve or regenerate.
+    """
+    job_id = f"concept-{str(uuid.uuid4())[:8]}"
+    concept_jobs[job_id] = {
+        "status": "queued",
+        "request": request.model_dump(),
+        "prompt": request.prompt,
+        "concept_image": None,
+        "prompt_used": None,
+        "error": None,
+    }
+    
+    background_tasks.add_task(run_concept_generation, job_id, request)
+    
+    print(f"🎨 [*] Queued concept job {job_id}: {request.prompt[:50]}...")
+    
+    return ConceptJobResponse(job_id=job_id, status="queued")
+
+
+@router.get("/concept/{job_id}", response_model=ConceptStatusResponse)
+async def get_concept_status(job_id: str):
+    """
+    Get the status of a concept generation job.
+    
+    When status is "ready", concept_image contains the base64 image data.
+    """
+    if job_id not in concept_jobs:
+        raise HTTPException(status_code=404, detail="Concept job not found")
+    
+    job = concept_jobs[job_id]
+    return ConceptStatusResponse(
+        job_id=job_id,
+        status=job["status"],
+        concept_image=job.get("concept_image"),
+        prompt=job.get("prompt"),
+        prompt_used=job.get("prompt_used"),
+        error=job.get("error"),
+    )
+
+
+@router.post("/concept/{job_id}/approve", response_model=ConceptApproveResponse)
+async def approve_concept(
+    job_id: str,
+    request: ConceptApproveRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Approve a concept image and proceed to 3D generation.
+    
+    This is Phase 2 of the two-phase workflow.
+    The concept image becomes the visual reference for all 3D generation stages.
+    """
+    if job_id not in concept_jobs:
+        raise HTTPException(status_code=404, detail="Concept job not found")
+    
+    concept_job = concept_jobs[job_id]
+    
+    if concept_job["status"] != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Concept not ready for approval (status: {concept_job['status']})"
+        )
+    
+    if not concept_job.get("concept_image"):
+        raise HTTPException(status_code=400, detail="No concept image available")
+    
+    concept_job["status"] = "approved"
+    
+    gen_job_id = str(uuid.uuid4())[:8]
+    original_request = concept_job["request"]
+    
+    gen_request = GenerateRequestAPI(
+        prompt=original_request["prompt"],
+        category=original_request.get("category"),
+        style_reference=original_request.get("style"),
+        track_override=request.track_override,
+    )
+    
+    jobs[gen_job_id] = {
+        "status": "queued",
+        "request": gen_request.model_dump(),
+        "concept_job_id": job_id,
+        "asset_id": None,
+        "result": None,
+        "error": None,
+    }
+    
+    background_tasks.add_task(
+        run_generation_with_concept,
+        gen_job_id,
+        gen_request,
+        concept_job["concept_image"],
+    )
+    
+    print(f"✅ [*] Concept {job_id} approved, starting 3D generation {gen_job_id}")
+    
+    return ConceptApproveResponse(
+        concept_job_id=job_id,
+        generation_job_id=gen_job_id,
+        status="approved",
+    )
+
+
+@router.post("/concept/{job_id}/regenerate", response_model=ConceptJobResponse)
+async def regenerate_concept(
+    job_id: str,
+    request: ConceptRegenerateRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Regenerate concept image with user feedback.
+    
+    Can optionally use the previous image as reference for iterative refinement.
+    """
+    if job_id not in concept_jobs:
+        raise HTTPException(status_code=404, detail="Concept job not found")
+    
+    concept_job = concept_jobs[job_id]
+    
+    if concept_job["status"] not in ("ready", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot regenerate (status: {concept_job['status']})"
+        )
+    
+    new_job_id = f"concept-{str(uuid.uuid4())[:8]}"
+    original_request = concept_job["request"]
+    
+    concept_jobs[new_job_id] = {
+        "status": "queued",
+        "request": original_request,
+        "prompt": original_request["prompt"],
+        "concept_image": None,
+        "prompt_used": None,
+        "error": None,
+        "feedback": request.feedback,
+        "previous_job_id": job_id,
+    }
+    
+    async def _run_regeneration() -> None:
+        import traceback
+        from ..ai_pipeline.concept_artist import regenerate_concept_with_feedback
+        
+        print(f"🎨 [*] Regenerating concept {new_job_id} with feedback...")
+        concept_jobs[new_job_id]["status"] = "generating"
+        
+        try:
+            previous_image = None
+            if request.use_previous_as_reference:
+                previous_image = concept_job.get("concept_image")
+            
+            result = await regenerate_concept_with_feedback(
+                original_prompt=original_request["prompt"],
+                feedback=request.feedback,
+                previous_image_base64=previous_image,
+                style=original_request.get("style"),
+                aspect_ratio=original_request.get("aspect_ratio", "1:1"),
+            )
+            
+            concept_jobs[new_job_id]["status"] = "ready"
+            concept_jobs[new_job_id]["concept_image"] = result.image_base64
+            concept_jobs[new_job_id]["prompt_used"] = result.prompt_used
+            
+            print(f"✅ [+] Regenerated concept {new_job_id} ready")
+            
+        except Exception as e:
+            concept_jobs[new_job_id]["status"] = "failed"
+            concept_jobs[new_job_id]["error"] = str(e)
+            print(f"❌ [-] Regeneration {new_job_id} failed: {e}")
+    
+    background_tasks.add_task(_run_regeneration)
+    
+    print(f"🔄 [*] Queued regeneration {new_job_id} with feedback: {request.feedback[:50]}...")
+    
+    return ConceptJobResponse(job_id=new_job_id, status="queued")
+
+
+@router.delete("/concept/{job_id}")
+async def cancel_concept(job_id: str):
+    """
+    Cancel/reject a concept job.
+    
+    Removes the job from tracking. User can start fresh with new prompt.
+    """
+    if job_id not in concept_jobs:
+        raise HTTPException(status_code=404, detail="Concept job not found")
+    
+    concept_jobs[job_id]["status"] = "cancelled"
+    
+    print(f"🗑️ [*] Concept job {job_id} cancelled")
+    
+    return {"status": "cancelled", "job_id": job_id}
+
+
+@router.get("/concept/{job_id}/styles")
+async def get_available_styles():
+    """Get available style presets for concept generation."""
+    from ..ai_pipeline.concept_artist import get_available_styles
+    
+    return get_available_styles()

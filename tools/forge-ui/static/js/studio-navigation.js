@@ -295,24 +295,17 @@ window.deleteAssetFromChain = async function (assetId) {
 };
 
 
-// Output logging
-window.logOutput = function (message, type = 'info') {
-    const output = document.getElementById('generation-output');
-    const empty = output.querySelector('.output-empty');
-    if (empty) empty.remove();
-
-    const line = document.createElement('p');
-    line.className = `output-line ${type}`;
-    const timestamp = new Date().toLocaleTimeString();
-    line.textContent = `[${timestamp}] ${message}`;
-    output.appendChild(line);
-    output.scrollTop = output.scrollHeight;
-};
-
-window.clearOutput = function () {
-    const output = document.getElementById('generation-output');
-    output.innerHTML = '<p class="output-empty">Generation output will appear here...</p>';
-};
+// Output logging — canonical implementations live in studio-genai-ui.js
+// (exported to window.logOutput and window.clearOutput there).
+// If GenAI module hasn't loaded yet, provide a minimal fallback.
+if (typeof window.logOutput !== 'function') {
+    window.logOutput = function (message, _type = 'info') {
+        console.log(`[logOutput] ${message}`);
+    };
+}
+if (typeof window.clearOutput !== 'function') {
+    window.clearOutput = function () {};
+}
 
 // Utility: debounce
 export function debounce(fn, delay) {

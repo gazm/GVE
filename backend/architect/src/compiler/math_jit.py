@@ -13,7 +13,17 @@ from .math_jit_nodes import (
     ConeNode,
     CapsuleNode,
     PlaneNode,
+    WedgeNode,
+    RevolutionNode,
     UnionNode,
+    SubtractNode,
+    IntersectNode,
+    SmoothUnionNode,
+    SmoothSubtractNode,
+    SmoothIntersectNode,
+    MandelbulbNode,
+    MengerSpongeNode,
+    JuliaSetNode,
 )
 
 # Re-export modifiers
@@ -24,6 +34,7 @@ from .math_jit_modifiers import (
     TaperModifier,
     MirrorModifier,
     RoundModifier,
+    VoronoiModifier,
     build_modifier,
     AXIS_INDEX,
 )
@@ -36,7 +47,7 @@ from .math_jit_builder import (
 )
 
 __all__ = [
-    # Nodes
+    # Primitives
     "SphereNode",
     "BoxNode",
     "CylinderNode",
@@ -44,7 +55,19 @@ __all__ = [
     "ConeNode",
     "CapsuleNode",
     "PlaneNode",
+    "WedgeNode",
+    "RevolutionNode",
+    # CSG Operations
     "UnionNode",
+    "SubtractNode",
+    "IntersectNode",
+    "SmoothUnionNode",
+    "SmoothSubtractNode",
+    "SmoothIntersectNode",
+    # Fractals
+    "MandelbulbNode",
+    "MengerSpongeNode",
+    "JuliaSetNode",
     # Modifiers
     "TransformNode",
     "TwistModifier",
@@ -52,6 +75,7 @@ __all__ = [
     "TaperModifier",
     "MirrorModifier",
     "RoundModifier",
+    "VoronoiModifier",
     "build_modifier",
     "AXIS_INDEX",
     # Builder

@@ -2,15 +2,24 @@
 
 **Role:** Intelligent asset generation via multi-agent orchestration  
 **Integration:** Architect (Layer 2) → Compiler Pipeline → Engine (Layer 3)  
-**Philosophy:** "Incremental Assembly with Active Verification"
+**Philosophy:** "Image-First Generation with Iterative Refinement"
 
 ---
 
 ## **System Overview**
 
-The AI Pipeline transforms natural language prompts into valid GVE-1 assets (`.gve_bin`) through specialized AI agents working in parallel tracks. Each track targets a specific domain (geometry, terrain, audio) with constrained responsibilities and validation checkpoints.
+The AI Pipeline transforms natural language prompts into valid GVE-1 assets (`.gve_bin`) through a **two-phase workflow**:
 
-**Key Principle:** Break complex generation into simple, verifiable steps rather than one monolithic LLM call.
+1. **Phase 1: Concept Generation** - Generate a 2D concept image using Gemini Nano Banana Pro
+2. **User Review** - User approves, regenerates with feedback, or cancels
+3. **Phase 2: 3D Generation** - Multi-agent pipeline uses concept as visual reference
+
+Each track targets a specific domain (geometry, terrain, audio) with constrained responsibilities and validation checkpoints.
+
+**Key Principles:**
+- **Image-First**: Visual concept guides all 3D generation stages for better quality
+- **User Checkpoint**: Catch misunderstandings before expensive 3D generation
+- **Learning Loop**: Approved concepts become RAG examples for future generations
 
 ### Integration Points
 
@@ -18,10 +27,18 @@ The AI Pipeline transforms natural language prompts into valid GVE-1 assets (`.g
 User Prompt
     ↓
 ┌───────────────────────────────────┐
-│ AI Pipeline (Architect/Python)    │
+│ Phase 1: Concept Artist           │  ← Gemini 3 Pro Image Preview
+│  └─ 2D Concept Image Generation   │
+└──────────┬────────────────────────┘
+           ↓ (User Review)
+    [Approve / Regenerate / Cancel]
+           ↓
+┌───────────────────────────────────┐
+│ Phase 2: AI Pipeline              │
 │  ├─ Track Router (classifier)    │ 
-│  ├─ RAG Context Injection         │
+│  ├─ RAG Context + Concept Image   │
 │  └─ Multi-Agent Generation        │
+│      (A1→A2→A3 with vision ref)   │
 └──────────┬────────────────────────┘
            ↓ (DNA JSON)
 ┌───────────────────────────────────┐
@@ -36,6 +53,16 @@ User Prompt
 │  └─ Runtime Rendering             │
 └───────────────────────────────────┘
 ```
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/generate/concept` | POST | Start concept image generation |
+| `/api/generate/concept/{job_id}` | GET | Get concept status and image |
+| `/api/generate/concept/{job_id}/approve` | POST | Approve and start 3D generation |
+| `/api/generate/concept/{job_id}/regenerate` | POST | Regenerate with feedback |
+| `/api/generate/concept/{job_id}` | DELETE | Cancel concept job |
 
 ---
 
@@ -57,13 +84,17 @@ User Prompt
 
 ```
 Orchestrator (Meta-Agent)
+  │
+  ├─ Stage A0: Concept Artist (gemini-3-pro-image-preview)
+  │   └─ Generates 2D concept image for user approval
+  │
   ├─ Track Router (Classifier)
   │
-  ├─ Track A: Matter Pipeline
-  │   ├─ Stage A1: Blacksmith (Form)
-  │   ├─ Stage A2: Machinist (Function)
-  │   ├─ Stage A3: Artist (Surface)
-  │   └─ Validator: Vision-Critic
+  ├─ Track A: Matter Pipeline (with concept image reference)
+  │   ├─ Stage A1: Blacksmith (Form) ─ Uses concept for proportions
+  │   ├─ Stage A2: Machinist (Function) ─ Uses concept for details
+  │   ├─ Stage A3: Artist (Surface) ─ Uses concept for materials
+  │   └─ RAG Index: Approved concept → Learning Loop
   │
   ├─ Track B: Landscape Pipeline
   │   ├─ Stage B1: Geologist
@@ -88,6 +119,7 @@ class GenerationState:
     validation_history: list[ValidationResult]
     retry_count: int = 0
     max_retries: int = 3
+    concept_image_base64: str | None = None  # Visual reference for all stages
 ```
 
 ---
@@ -156,9 +188,53 @@ def inject_rag_context(track: str, user_prompt: str) -> dict:
 **Output:** `dna.json` → Compiler Pipeline → `.gve_bin`  
 **Flow:** Form → Function → Surface
 
+### Coordinate System Convention
+
+All SDF primitives use a **right-handed coordinate system**:
+- **Y is UP** (height)
+- **Z is FORWARD** (barrel/length direction)
+- **X is RIGHT** (width)
+
+**Primitive Orientation:**
+- `Cylinder`, `Capsule`, `Cone` are aligned along **Z axis** (forward)
+- A weapon barrel cylinder naturally points forward without rotation
+- To make a vertical grip, rotate 90° around X: `rot: [90, 0, 0]`
+
+**Rotation (Euler XYZ, degrees):**
+- `+X rotation`: Tilts forward (top → +Z)
+- `-X rotation`: Tilts backward (top → -Z)
+- `+Y rotation`: Rotates left (counter-clockwise from above)
+- `-Y rotation`: Rotates right (clockwise from above)
+
 ### Stage A1: The Blacksmith (Form & Massing)
 
 **Task:** Create base silhouette using **Union operations only**.
+
+**Available Primitives:**
+| Primitive | Parameters | Use Case |
+|-----------|-----------|----------|
+| `sphere` | `radius` | Biological forms, joints |
+| `box` | `size` (half-extents [x,y,z]) | Rectangular prisms |
+| `cylinder` | `radius`, `height` | Barrels, tubes (Z-aligned) |
+| `capsule` | `radius`, `height` | Rounded cylinders (Z-aligned) |
+| `torus` | `major_r`, `minor_r` | Rings, bands |
+| `cone` | `radius`, `height` | Tapered forms (Z-aligned) |
+| `wedge` | `size` (half-extents), `taper_axis`, `taper_dir` | Triangular prisms (stocks, ramps, fins) |
+| `plane` | `normal`, `distance` | Ground planes, cutting |
+| `revolution` | `profile`, `axis`, `offset` | Lathed forms (bowls, vases) |
+| `mandelbulb` | `power`, `iterations`, `scale` | 3D fractals (alien/organic) |
+| `menger` | `iterations`, `scale` | Sponge fractals (sci-fi) |
+| `julia` | `c` [x,y,z,w], `iterations`, `scale` | Quaternion Julia sets |
+
+**Available Domain Modifiers (per-node):**
+| Modifier | Parameters | Effect |
+|----------|-----------|--------|
+| `twist` | `axis`, `rate` | Spiral along axis (rad/meter) |
+| `bend` | `axis`, `angle` | Curve shape (radians) |
+| `taper` | `axis`, `scale_min`, `scale_max` | Scale cross-section |
+| `mirror` | `axis` | Symmetry across axis plane |
+| `round` | `radius` | Bevel edges (meters) |
+| `voronoi` | `cell_size`, `wall_thickness`, `mode` | 3D cellular pattern |
 
 **System Prompt:**
 ```
@@ -183,16 +259,23 @@ Focus on: silhouette, proportions, major structural blocks.
 # OUTPUT FORMAT
 {
   "sdf_tree": {
-    "operations": [
-      {"op": "union", "left": {...}, "right": {...}}
-    ],
-    "primitives": [
-      {"type": "box", "params": {"size": [x,y,z], "center": [x,y,z]}}
+    "type": "operation",
+    "op": "union",
+    "children": [
+      {
+        "id": "unique_id",
+        "type": "primitive",
+        "shape": "box|sphere|cylinder|...",
+        "params": {"size": [x,y,z], "radius": r, ...},
+        "transform": {"pos": [x,y,z], "rot": [x_deg, y_deg, z_deg]},
+        "modifiers": [{"type": "twist", "axis": "y", "rate": 2.0}],
+        "lod_cutoff": 0
+      }
     ]
   },
   "metadata": {
     "estimated_bounds": {"min": [...], "max": [...]},
-    "primary_lod": 0
+    "primary_axis": "y"
   }
 }
 ```
@@ -209,6 +292,15 @@ Focus on: silhouette, proportions, major structural blocks.
 
 **Key Constraint:** Cannot delete Stage A1 nodes. Only **append** via Delta Patch.
 
+**Available Operations:**
+| Operation | Parameters | Effect |
+|-----------|-----------|--------|
+| `subtract` | - | Hard boolean cut |
+| `smooth_subtract` | `k` (0.05-0.5) | Filleted concave edges (realistic machined cuts) |
+
+**Available Modifiers for Subtract Geometry:**
+- `voronoi`: Create honeycomb/cellular weight-reduction patterns
+
 **System Prompt:**
 ```
 # ROLE
@@ -221,9 +313,10 @@ Enhance the geometry with:
 
 # CONSTRAINTS
 1. CANNOT modify Stage A1 output
-2. Output ONLY new Subtract operations
+2. Output ONLY new Subtract/Smooth_Subtract operations
 3. Use specialized functions: Machine_Bore, Machine_Slot, Machine_Array_Radial
 4. Tag features with lod_cutoff: 1 (mid-detail)
+5. Use smooth_subtract with k value for filleted machined edges
 
 # CONTEXT (READ-ONLY)
 Stage A1 Output: {stage_a1_json}
@@ -235,7 +328,14 @@ Stage A1 Output: {stage_a1_json}
       {
         "op": "subtract",
         "target_node_id": "box_001",
-        "subtract": {"type": "cylinder", ...},
+        "subtract": {"type": "primitive", "shape": "cylinder", "params": {...}},
+        "lod_cutoff": 1
+      },
+      {
+        "op": "smooth_subtract",
+        "target_node_id": "box_001",
+        "subtract": {"type": "primitive", "shape": "box", "params": {...}},
+        "k": 0.1,
         "lod_cutoff": 1
       }
     ]
@@ -253,22 +353,58 @@ Machine_Array_Radial(count=8, radius=0.5, primitive="cylinder")
 
 ---
 
-###Stage A3: The Artist (Surface & Materials)
+### Stage A3: The Artist (Surface & Materials)
 
-**Task:** Apply materials and visual style **without altering geometry**.
+**Task:** Apply materials and visual style **without altering geometry**. This stage also configures **Splat Rendering** settings and **procedural textures**.
+
+**Material Registry (27 materials, AI-friendly aliases):**
+| Category | Aliases | Examples |
+|----------|---------|----------|
+| Metals | `METAL_STEEL`, `METAL_ALUMINUM`, `METAL_COPPER`, `METAL_TITANIUM`, `METAL_BRASS` | Weapons, machinery, aerospace |
+| Stone | `CONCRETE_STANDARD`, `STONE_LIMESTONE`, `STONE_MARBLE` | Buildings, terrain |
+| Wood | `WOOD_OAK`, `WOOD_PINE`, `WOOD_MAPLE` | Handles, furniture |
+| Plastics | `PLASTIC_ABS`, `PLASTIC_POLYCARBONATE`, `CARBON_FIBER` | Casings, high-tech |
+| Glass/Ceramic | `GLASS_CLEAR`, `CERAMIC_TILE` | Windows, pottery |
+| Rubber/Textile | `RUBBER_STANDARD`, `RUBBER_SILICONE`, `TEXTILE_COTTON`, `TEXTILE_NYLON` | Grips, covers |
+| Specialty | `KEVLAR_49`, `BALLISTIC_GEL` | Armor, testing |
+
+**PBR Overrides (per-node):**
+| Field | Range | Effect |
+|-------|-------|--------|
+| `metallic` | 0.0-1.0 | Override material registry metallic (optional) |
+| `roughness` | 0.0-1.0 | Override material registry roughness (optional) |
+
+**Texture Modifiers (per-node weathering) [aspirational -- not yet consumed by compiler]:**
+| Modifier | Range | Effect |
+|----------|-------|--------|
+| `edge_wear` | 0.0-1.0 | Worn edges reveal underlying material |
+| `cavity_grime` | 0.0-1.0 | Dirt/grime in recesses |
+| `rust_amount` | 0.0-1.0 | Rust/corrosion on metals |
+
+**Procedural Textures (noise-based pattern overlay):**
+| Pattern | Effect | Best For |
+|---------|--------|----------|
+| `perlin` | General smooth noise | Organic surfaces, subtle variation |
+| `wood_grain` | Concentric ring pattern | Natural wood grain |
+| `marble` | Veined stone pattern | Marble, polished stone |
+| `rust` | Patchy weathering | Realistic rust distribution |
+
+Procedural texture params: `scale`, `intensity` (0-1), `color_variation` (0-1), `roughness_variation` (0-1), `metallic_variation` (0-1, default 0).
 
 **System Prompt:**
 ```
 # ROLE
-You are The Artist. You define surface appearance.
+You are The Artist. You define surface appearance and rendering quality.
 
 # TASK
-Apply materials and texture modifiers based on style token.
+1. Assignment: Apply materials to existing nodes using valid Material IDs.
+2. Configuration: Set global render settings for Gaussian Splatting.
+3. Texturing: Optionally apply procedural texture patterns for surface detail.
 
 # CONSTRAINTS
-1. CANNOT modify geometry from A1/A2
-2. Use ONLY valid Material_IDs from ASTM/AMS registry
-3. Apply triplanar texture modifiers (see rendering-pipeline.md §3.4)
+1. CANNOT modify geometry from A1/A2.
+2. Use ONLY valid Material_IDs from the registry.
+3. Configure `splat_count` based on asset complexity (Low: 10k, Med: 50k, High: 100k).
 
 # AVAILABLE MATERIALS
 {rag_context.material_registry}
@@ -280,23 +416,40 @@ Apply materials and texture modifiers based on style token.
 {
   "material_config": {
     "node_001": {
-      "material_id": "ASTM_C114",  # Concrete
+      "material_id": "METAL_STEEL",
+      "base_color": "#5A5A5A",
+      "metallic": 0.9,
+      "roughness": 0.35,
       "texture_modifiers": {
-        "decal_projection": "warning_stripes",
-        "wear_amount": 0.6
+        "edge_wear": 0.3,
+        "cavity_grime": 0.2,
+        "rust_amount": 0.1
       },
-      "color_mode": "rgb"  # or "oklab" for procedural
+      "procedural_texture": {
+        "type": "rust",
+        "scale": 4.0,
+        "intensity": 0.3,
+        "color_variation": 0.2,
+        "roughness_variation": 0.15,
+        "metallic_variation": 0.1
+      }
     }
+  },
+  "render_settings": {
+    "splat_count": 50000,
+    "iterations": 300
   }
 }
 ```
 
 **Style Logic:**
-- `Industrial` → Apply warning stripes, rust
-- `Cyberpunk` → Emissive panels, holographic effects
-- `Organic` → SmoothUnion blending, organic materials
+- `Industrial` → Apply warning stripes, rust procedural texture, edge wear, high roughness
+- `Cyberpunk` → Emissive panels, carbon fiber, low roughness on panels, metallic overrides
+- `Organic` → SmoothUnion blending, organic materials, marble/wood textures, low metallic
+- `Military` → Kevlar, steel, high cavity grime, low edge wear, high metallic
+- `Steampunk` → Copper, brass, high rust_amount, wood grain textures, metallic_variation on rust
 
-**Integration:** Combined JSON → Compiler Pipeline for baking.
+**Integration:** Combined JSON → Compiler Pipeline for baking to `.gve_bin`.
 
 ---
 
@@ -591,7 +744,7 @@ def select_examples(user_prompt: str, num: int = 3) -> list[dict]:
 
 ---
 
-##**  8. Cost Optimization**
+## **8. Cost Optimization**
 
 ### 8.1 Model Tier Selection
 
@@ -668,8 +821,34 @@ logger.info(
 
 ## **10. Implementation Checklist**
 
+### Two-Phase Generation (NEW - Implemented Feb 2026)
+- [x] Concept Artist agent (gemini-3-pro-image-preview)
+- [x] `/api/generate/concept` endpoints
+- [x] Concept preview UI in Forge
+- [x] Approve/Regenerate/Cancel workflow
+- [x] Vision-guided agents (Blacksmith, Machinist, Artist)
+- [x] Concept image → RAG learning loop
+
+### Matter Pipeline (Track A)
+- [x] Stage A1: Blacksmith (Form & Massing)
+- [x] Stage A2: Machinist (Function & Details)
+- [x] Stage A3: Artist (Materials & Surface)
+- [x] `_merge_pipeline_outputs()` integration
+- [x] Concept image as visual reference for all stages
+
+### Extended Primitives & Modifiers (Feb 2026)
+- [x] Fractal primitives: Mandelbulb, Menger Sponge, Julia Set
+- [x] Revolution primitive (lathe operation)
+- [x] Wedge primitive (triangular prism for stocks, ramps, fins, blade edges)
+- [x] Smooth subtract/intersect operations (filleted CSG)
+- [x] Voronoi modifier (cellular/honeycomb patterns)
+- [x] Procedural texture node (perlin, wood_grain, marble, rust)
+- [x] Expanded material registry (27 materials, 17+ AI-friendly aliases)
+- [x] Agent prompts updated with full compiler capabilities
+- [x] DNA validator accepts new primitive shapes
+
 ### Infrastructure
-- [ ] Vector DB (Qdrant/Pinecone) for RAG
+- [x] MongoDB Atlas Vector Search for RAG
 - [ ] Redis for response caching
 - [ ] Prometheus + Grafana monitoring
 - [ ] Rate limiting (per-user quotas)
@@ -677,16 +856,15 @@ logger.info(
 
 ### AI Components
 - [ ] Fine-tune track classifier (>98% accuracy)
-- [ ] Build RAG index from API docs + examples
-- [ ] Implement Vision Critic (GPT-4V integration)
+- [x] RAG index from approved concepts (learning loop)
 - [ ] Create eval dataset (100+ examples per track)
 - [ ] Set up A/B testing for prompt variations
 
 ### Quality Assurance
-- [ ] Define validation schemas per asset type
+- [x] Define validation schemas per asset type (Pydantic)
 - [ ] Automated test suite (unit + integration)
 - [ ] Human review queue for edge cases
-- [ ] Feedback loop: accepted assets → RAG examples
+- [x] Feedback loop: approved concepts → RAG examples
 - [ ] Weekly hallucination rate monitoring
 
 ### Cost Management
@@ -732,5 +910,5 @@ logger.info(
 ---
 
 **Status:** ✅ Complete  
-**Last Updated:** January 25, 2026  
-**Version:** 2.0 (Agentic Architecture)
+**Last Updated:** February 6, 2026  
+**Version:** 3.1 (Enhanced Primitives, Modifiers & Procedural Textures)

@@ -9,7 +9,8 @@ glam = "0.29"
 bytemuck = { version = "1.14", features = ["derive"] }
 shared = { path = "../shared" }
 log = "0.4"
+lz4_flex = "0.11"  # Pure Rust LZ4, WASM compatible
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "console"] }

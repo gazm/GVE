@@ -191,6 +191,7 @@
     height: 32px;
     background: rgba(0, 0, 0, 0.75);
     backdrop-filter: blur(8px);
+    will-change: backdrop-filter;
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 4px;
     color: var(--text-primary);
@@ -301,6 +302,7 @@
     border-radius: 16px;
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(10px);
+    will-change: backdrop-filter;
     z-index: 1000;
     pointer-events: auto;
 }
@@ -581,5 +583,390 @@
     to {
         opacity: 1;
         transform: translateY(0);
+    }
+}
+
+/* ==========================================================================
+   Concept Preview (Two-Phase Generation)
+   ========================================================================== */
+
+.concept-preview {
+    display: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-top: 16px;
+    overflow: hidden;
+    animation: slideIn 0.3s ease-out;
+}
+
+.concept-preview-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+}
+
+.concept-preview-header h4 {
+    margin: 0 0 4px 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.concept-prompt {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.concept-image-container {
+    padding: 16px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: var(--bg-base);
+}
+
+.concept-image {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.concept-actions {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+}
+
+.concept-actions .btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.concept-actions .btn-primary {
+    background: var(--accent);
+    color: var(--bg-base);
+    border: 1px solid var(--accent);
+}
+
+.concept-actions .btn-primary:hover {
+    background: var(--accent-glow);
+    border-color: var(--accent-glow);
+}
+
+.concept-actions .btn-secondary {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+
+.concept-actions .btn-secondary:hover {
+    border-color: var(--text-secondary);
+}
+
+.concept-actions .btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+}
+
+.concept-actions .btn-ghost:hover {
+    color: var(--text-secondary);
+    border-color: var(--border);
+}
+
+/* ==========================================================================
+   Workflow Mode Toggle
+   ========================================================================== */
+
+.workflow-mode {
+    margin-bottom: 12px;
+}
+
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.toggle-checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.toggle-text {
+    transition: color 0.2s;
+}
+
+.toggle-label:hover .toggle-text {
+    color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Regenerate Feedback Dialog
+   ========================================================================== */
+
+.regenerate-dialog {
+    margin-top: 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    overflow: hidden;
+    animation: slideIn 0.3s ease-out;
+}
+
+.regenerate-dialog .dialog-header {
+    padding: 12px 16px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.regenerate-dialog .dialog-header h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.regenerate-dialog .dialog-content {
+    padding: 16px;
+}
+
+.regenerate-dialog .dialog-content label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.regenerate-dialog .dialog-content textarea {
+    min-height: 60px;
+}
+
+.regenerate-dialog .dialog-actions {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+}
+
+.regenerate-dialog .dialog-actions .btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+/* ==========================================================================
+   Generation Progress Indicator
+   ========================================================================== */
+
+.generation-progress {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.progress-phase {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.progress-status {
+    font-size: 0.75rem;
+    color: var(--accent);
+}
+
+.progress-bar {
+    height: 4px;
+    background: var(--bg-deep);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.progress-bar-fill.indeterminate {
+    width: 30%;
+    animation: progress-indeterminate 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
+/* =============================================================================
+   Stage Progress Indicator - AI Pipeline Stages
+   ============================================================================= */
+
+.stage-progress {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 12px 0;
+}
+
+.stage-progress-header {
+    margin-bottom: 12px;
+}
+
+.stage-progress-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.stage-progress-items {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+}
+
+.stage-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    padding: 8px;
+    border-radius: 6px;
+    transition: all 0.3s ease;
+}
+
+.stage-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.stage-name {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: color 0.3s ease;
+}
+
+.stage-status {
+    font-size: 0.65rem;
+    min-height: 14px;
+}
+
+/* Stage States */
+.stage-item.pending .stage-icon {
+    background: var(--bg-deep);
+    color: var(--text-muted);
+    border: 2px solid var(--border);
+}
+
+.stage-item.active .stage-icon {
+    background: var(--accent);
+    color: var(--bg-main);
+    border: 2px solid var(--accent);
+    animation: stage-pulse 1.5s ease-in-out infinite;
+}
+
+.stage-item.active .stage-name {
+    color: var(--accent);
+}
+
+.stage-item.active .stage-status::after {
+    content: 'Processing...';
+    color: var(--accent);
+}
+
+.stage-item.complete .stage-icon {
+    background: var(--success, #22c55e);
+    color: white;
+    border: 2px solid var(--success, #22c55e);
+}
+
+.stage-item.complete .stage-icon::after {
+    content: '✓';
+    position: absolute;
+}
+
+.stage-item.complete .stage-name {
+    color: var(--success, #22c55e);
+}
+
+.stage-item.complete .stage-status::after {
+    content: 'Done';
+    color: var(--success, #22c55e);
+}
+
+/* Stage Connector */
+.stage-connector {
+    width: 20px;
+    height: 2px;
+    background: var(--border);
+    flex-shrink: 0;
+    transition: background 0.3s ease;
+}
+
+.stage-item.complete + .stage-connector {
+    background: var(--success, #22c55e);
+}
+
+/* Pulse animation for active stage */
+@keyframes stage-pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 59, 130, 246), 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(var(--accent-rgb, 59, 130, 246), 0);
     }
 }

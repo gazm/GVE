@@ -99,9 +99,10 @@ class BaseAgent(ABC, Generic[T]):
             
             # Format field path
             field_path = " → ".join(str(l) for l in loc)
+            loc_str = str(loc).lower()
             
             # Special handling for common errors
-            if "children" in str(loc).lower() and isinstance(input_value, str):
+            if "children" in loc_str and isinstance(input_value, str):
                 error_messages.append(
                     f"❌ {field_path}: Got string '{input_value}' but must be an object.\n"
                     f"   Each child in 'children' array must be a complete object with: id, type, shape, params"
@@ -112,6 +113,40 @@ class BaseAgent(ABC, Generic[T]):
                     "shape": "cylinder",
                     "params": {"radius": 0.5, "height": 1.0},
                     "lod_cutoff": 0
+                }
+            elif "subtract" in loc_str:
+                # Machinist-specific: subtract field must be a dict, not a string
+                error_messages.append(
+                    f"❌ {field_path}: The 'subtract' field MUST be a dictionary/object.\n"
+                    f"   Got: {type(input_value).__name__} = {repr(input_value)[:100]}\n"
+                    f"   Expected: {{\"type\": \"primitive\", \"shape\": \"cylinder\", \"params\": {{...}}}}"
+                )
+                example_fix = {
+                    "op": "subtract",
+                    "target_node_id": "node_001",
+                    "subtract": {
+                        "type": "primitive",
+                        "shape": "cylinder",
+                        "params": {"radius": 0.1, "height": 0.3}
+                    },
+                    "lod_cutoff": 1
+                }
+            elif "add_operations" in loc_str and isinstance(input_value, str):
+                # Machinist-specific: add_operations array items must be dicts
+                error_messages.append(
+                    f"❌ {field_path}: Each item in 'add_operations' must be an object.\n"
+                    f"   Got string: '{input_value}'\n"
+                    f"   Expected: Complete operation object with op, target_node_id, subtract, lod_cutoff"
+                )
+                example_fix = {
+                    "op": "subtract",
+                    "target_node_id": "node_001",
+                    "subtract": {
+                        "type": "primitive",
+                        "shape": "cylinder",
+                        "params": {"radius": 0.1, "height": 0.3}
+                    },
+                    "lod_cutoff": 1
                 }
             elif "type" in msg.lower() and "dict" in msg.lower():
                 error_messages.append(
@@ -316,18 +351,22 @@ class GeminiVisionAgent(BaseAgent[T]):
         image_data = image_path.read_bytes()
         
         last_error: Exception | None = None
+        current_prompt = user_prompt  # Track prompt for retry modifications
         
         for attempt in range(self.max_retries):
             try:
+                print(f"  [{self.name}] Vision attempt {attempt + 1}/{self.max_retries}...")
+                
                 # Convert Pydantic model to JSON schema dict
                 json_schema = schema.model_json_schema()
-                # Remove additionalProperties which Gemini doesn't support
-                if "additionalProperties" in json_schema:
-                    del json_schema["additionalProperties"]
-                # Clean up nested additionalProperties
+                
+                # Clean up schema for Gemini compatibility
                 def clean_schema(obj):
                     if isinstance(obj, dict):
                         obj = {k: v for k, v in obj.items() if k != "additionalProperties"}
+                        # Ensure array items have proper schema definition
+                        if "items" in obj and isinstance(obj["items"], dict):
+                            obj["items"] = clean_schema(obj["items"])
                         return {k: clean_schema(v) for k, v in obj.items()}
                     elif isinstance(obj, list):
                         return [clean_schema(item) for item in obj]
@@ -335,18 +374,21 @@ class GeminiVisionAgent(BaseAgent[T]):
                 json_schema = clean_schema(json_schema)
                 
                 # Use Part.from_bytes for image input
-                response = await self._client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=[
-                        user_prompt,
-                        types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
-                    ],
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=self.temperature,
-                        response_mime_type="application/json",
-                        response_json_schema=json_schema,  # Use dict format
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=self.model_name,
+                        contents=[
+                            current_prompt,
+                            types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+                        ],
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=self.temperature,
+                            response_mime_type="application/json",
+                            response_json_schema=json_schema,
+                        ),
                     ),
+                    timeout=120.0  # 2 minute timeout
                 )
                 
                 # Parse response
@@ -357,9 +399,44 @@ class GeminiVisionAgent(BaseAgent[T]):
                 print(f"✅ {self.name} (vision) completed (attempt {attempt + 1})")
                 return result
                 
+            except json.JSONDecodeError as e:
+                last_error = e
+                print(f"⚠️ {self.name} (vision) JSON parse error (attempt {attempt + 1}): {e}")
+                if attempt < self.max_retries - 1:
+                    current_prompt = f"{user_prompt}\n\n[ERROR: Previous response was invalid JSON. Please ensure your response is valid JSON.]"
+                
+            except asyncio.TimeoutError:
+                last_error = RuntimeError("API call timed out after 120 seconds")
+                print(f"⚠️ {self.name} (vision) timeout (attempt {attempt + 1})")
+                
             except Exception as e:
                 last_error = e
-                print(f"⚠️ {self.name} (vision) error (attempt {attempt + 1}): {e}")
+                error_msg = str(e)
+                print(f"⚠️ {self.name} (vision) error (attempt {attempt + 1}): {error_msg}")
+                
+                # If it's a Pydantic validation error, include details in retry
+                if attempt < self.max_retries - 1 and "validation error" in error_msg.lower():
+                    # Extract validation error details and format clearly
+                    error_instructions = self._format_validation_error(e, user_prompt)
+                    if error_instructions:
+                        current_prompt = error_instructions
+                    else:
+                        # Fallback to basic error message
+                        error_details = error_msg
+                        if isinstance(e, ValidationError):
+                            error_list = e.errors()
+                            error_details = json.dumps(error_list, indent=2)
+                        
+                        current_prompt = f"""{user_prompt}
+
+[VALIDATION ERROR - Please fix the following issues:]
+{error_details}
+
+[CRITICAL REMINDER for Machinist:]
+- Each item in add_operations must be a complete object
+- The "subtract" field must be a DICTIONARY like {{"type": "primitive", "shape": "cylinder", "params": {{...}}}}
+- NOT a string like "subtract": "node_id" 
+"""
         
         raise RuntimeError(
             f"❌ {self.name} (vision) failed after {self.max_retries} attempts: {last_error}"

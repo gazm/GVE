@@ -22,6 +22,7 @@ class AssetSettings(BaseModel):
 class AudioProperties(BaseModel):
     material_name: str
     resonance: float
+    damping: float = 0.01
 
 
 class ColorMode(Enum):
@@ -35,6 +36,9 @@ class MaterialSpec(BaseModel):
     base_color: list[float] = Field(..., max_items=3, min_items=3)
     color_mode: ColorMode
     name: str
+    metallic: float = 0.0
+    roughness: float = 0.5
+    emissive: list[float] = Field(default=[0.0, 0.0, 0.0], max_items=3, min_items=3)
 
 
 class MessageType(Enum):

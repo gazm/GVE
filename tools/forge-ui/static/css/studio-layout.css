@@ -50,11 +50,28 @@
     min-width: 250px;
     max-width: 600px;
     /* resize: horizontal; Removed for custom handle */
-    overflow: auto;
+    overflow: hidden;
+    /* Let .panel-content handle scrolling */
     pointer-events: auto;
     /* Panels capture their own events */
     position: relative;
     /* For handle positioning */
+    display: flex;
+    flex-direction: column;
+}
+
+.genai-panel-left .panel-header {
+    flex-shrink: 0;
+    /* Header stays fixed at top */
+}
+
+.genai-panel-left .panel-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    /* Critical for flex scrolling */
+    padding: 16px 20px;
 }
 
 .genai-panel-right {
@@ -65,6 +82,8 @@
     flex-direction: column;
     pointer-events: auto;
     position: relative;
+    overflow: hidden;
+    /* Let children handle scrolling */
 }
 
 /* Asset Editor Studio Layout */
@@ -95,6 +114,14 @@
     position: relative;
     z-index: 10;
     /* Above viewport placeholder */
+}
+
+.studio-panel .panel-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    /* Critical for flex scrolling */
 }
 
 .hierarchy-panel {
@@ -201,6 +228,7 @@
     padding: 8px 12px;
     background: rgba(0, 0, 0, 0.75);
     backdrop-filter: blur(8px);
+    will-change: backdrop-filter;
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 4px;
     font-size: 0.75rem;

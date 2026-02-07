@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from src.compiler.queue import enqueue_compile, get_compile_status, CompilePriority
+from src.compiler import enqueue_compile, get_compile_status, CompilePriority
 from pydantic import BaseModel
 from typing import Optional
 

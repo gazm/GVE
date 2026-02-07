@@ -17,7 +17,9 @@ from .track_matter_schemas import (
     SDFNode,
     SDFRootNode,
     BlacksmithOutput,
+    SubtractPrimitive,
     MachinistDeltaPatch,
+    MachinistDeltaPatchList,
     MachinistOutput,
     MaterialConfig,
     ArtistOutput,
@@ -33,6 +35,7 @@ from .track_matter_agents import (
 # Re-export pipeline
 from .track_matter_pipeline import (
     execute_matter_pipeline,
+    StageCompleteCallback,
 )
 
 __all__ = [
@@ -43,7 +46,9 @@ __all__ = [
     "SDFNode",
     "SDFRootNode",
     "BlacksmithOutput",
+    "SubtractPrimitive",
     "MachinistDeltaPatch",
+    "MachinistDeltaPatchList",
     "MachinistOutput",
     "MaterialConfig",
     "ArtistOutput",
@@ -53,4 +58,5 @@ __all__ = [
     "ArtistAgent",
     # Pipeline
     "execute_matter_pipeline",
+    "StageCompleteCallback",
 ]

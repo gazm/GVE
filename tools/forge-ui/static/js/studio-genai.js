@@ -1,19 +1,66 @@
-// Studio GenAI - AI generation workflow
+// Studio GenAI - AI generation workflow (Two-Phase: Concept -> 3D)
 import { addEventListener } from '/static/js/events.js';
 import { syncExternalViewport } from '/static/js/studio-navigation.js';
 import { debounce } from '/static/js/studio-navigation.js';
+import * as UI from '/static/js/studio-genai-ui.js';
+
+// State for concept workflow
+let currentConceptJobId = null;
+let currentConceptImage = null;
+let currentPrompt = null;
+
+// State for 3D generation
+let currentGenerationJobId = null;
+let lastLoadedPreviewUrl = null;
+
+// =============================================================================
+// Initialization & Event Wiring
+// =============================================================================
+
+// Wire up workflow mode toggle
+if (UI.ui.skipConceptCheckbox) {
+    UI.ui.skipConceptCheckbox.addEventListener('change', () => {
+        const icon = document.querySelector('#btn-generate .icon');
+        const mode = UI.ui.skipConceptCheckbox.checked ? 'direct' : 'concept';
+        UI.updateGenerateButtonState(false, mode);
+    });
+}
+
+// Wire up concept preview buttons
+document.getElementById('btn-approve-concept')?.addEventListener('click', () => {
+    if (currentConceptJobId) approveConcept(currentConceptJobId);
+});
+
+document.getElementById('btn-regenerate-concept')?.addEventListener('click', () => {
+    if (currentConceptJobId) UI.showRegenerateDialog();
+});
+
+document.getElementById('btn-cancel-concept')?.addEventListener('click', () => {
+    if (currentConceptJobId) cancelConcept(currentConceptJobId);
+});
+
+// Wire up regenerate dialog buttons
+document.getElementById('btn-submit-regenerate')?.addEventListener('click', () => {
+    const feedback = document.getElementById('regenerate-feedback')?.value?.trim();
+    if (feedback && currentConceptJobId) {
+        regenerateConcept(currentConceptJobId, feedback);
+        UI.hideRegenerateDialog();
+    }
+});
+
+document.getElementById('btn-cancel-regenerate')?.addEventListener('click', UI.hideRegenerateDialog);
 
 // Type selector
-document.querySelectorAll('.type-btn').forEach(btn => {
+UI.ui.typeBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
+        UI.ui.typeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         updateCostEstimate();
     });
 });
 
 // Style chips (multi-select)
-document.querySelectorAll('.style-chips .chip').forEach(chip => {
+UI.ui.styleChips.forEach(chip => {
     chip.addEventListener('click', () => {
         chip.classList.toggle('active');
         updateCostEstimate();
@@ -21,20 +68,25 @@ document.querySelectorAll('.style-chips .chip').forEach(chip => {
 });
 
 // Viewport mode buttons
-document.querySelectorAll('.mode-btn').forEach(btn => {
+// Viewport mode buttons
+UI.ui.modeBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        UI.ui.modeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        // TODO: Switch viewport rendering mode
-        logOutput(`Viewport mode: ${btn.dataset.mode}`, 'info');
+
+        const mode = btn.dataset.mode;
+        UI.logOutput(`Viewport mode: ${mode}`, 'info');
+
+        if (window.set_view_mode) {
+            window.set_view_mode(mode);
+        }
     });
 });
 
 // Prompt input - suggest materials
-const promptInput = document.getElementById('ai-prompt');
-if (promptInput) {
-    promptInput.addEventListener('input', debounce(() => {
-        const prompt = promptInput.value.trim();
+if (UI.ui.promptInput) {
+    UI.ui.promptInput.addEventListener('input', debounce(() => {
+        const prompt = UI.ui.promptInput.value.trim();
         if (prompt.length > 2) {
             suggestMaterials(prompt);
             updateCostEstimate();
@@ -42,45 +94,48 @@ if (promptInput) {
     }, 500));
 }
 
+// Quality Slider Logic
+if (UI.ui.qualitySlider && UI.ui.qualityValue) {
+    const qualityLevels = ['Draft', 'Standard', 'High', 'Ultra'];
+    UI.ui.qualitySlider.addEventListener('input', () => {
+        const idx = parseInt(UI.ui.qualitySlider.value);
+        UI.ui.qualityValue.textContent = qualityLevels[idx];
+        updateCostEstimate();
+    });
+}
+
+// Global UI helper needed for inline onclick
+window.addMaterial = function (material) {
+    UI.logOutput(`Added material: ${material}`, 'info');
+    // could append to prompt here if desired
+};
+
+// =============================================================================
+// API calls
+// =============================================================================
+
 async function suggestMaterials(prompt) {
-    const suggestions = document.getElementById('material-suggestions');
-    
     try {
-        // Call backend API for material suggestions
         const response = await fetch(`/api/generate/suggest/materials?prompt=${encodeURIComponent(prompt)}`);
-        
         if (response.ok) {
             const data = await response.json();
-            const materials = data.materials;
-            
-            if (materials.length > 0) {
-                suggestions.innerHTML = materials.map(m =>
-                    `<button class="chip" onclick="addMaterial('${m}')">${m}</button>`
-                ).join('');
-            } else {
-                suggestions.innerHTML = '<span class="chip-placeholder">No suggestions for this prompt</span>';
-            }
+            UI.renderMaterialSuggestions(data.materials || []);
         } else {
-            suggestions.innerHTML = '<span class="chip-placeholder">Failed to load suggestions</span>';
+            UI.renderMaterialSuggestionsError();
         }
     } catch (err) {
         console.error('Failed to fetch material suggestions:', err);
-        suggestions.innerHTML = '<span class="chip-placeholder">Failed to load suggestions</span>';
+        UI.renderMaterialSuggestionsError();
     }
 }
-
-window.addMaterial = function (material) {
-    logOutput(`Added material: ${material}`, 'info');
-};
 
 async function updateCostEstimate() {
     const activeType = document.querySelector('.type-btn.active')?.dataset.type || 'prop';
     const activeStyles = Array.from(document.querySelectorAll('.style-chips .chip.active'))
         .map(c => c.dataset.style || c.textContent.trim());
-    const promptLength = document.getElementById('ai-prompt')?.value.length || 0;
+    const promptLength = UI.ui.promptInput?.value.length || 0;
 
     try {
-        // Call backend API for cost estimation
         const response = await fetch('/api/generate/estimate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -93,26 +148,214 @@ async function updateCostEstimate() {
 
         if (response.ok) {
             const data = await response.json();
-            document.getElementById('cost-estimate').textContent = `$${data.cost_usd.toFixed(2)}`;
-            document.querySelector('.estimate-time').textContent = `~${data.estimated_time_sec}s`;
+            UI.updateCostDisplay(data.cost_usd, data.estimated_time_sec);
         } else {
-            // Fallback to default display on error
-            document.getElementById('cost-estimate').textContent = '$--';
-            document.querySelector('.estimate-time').textContent = '~--s';
+            UI.updateCostDisplayError();
         }
     } catch (err) {
         console.error('Failed to fetch cost estimate:', err);
-        // Fallback to default display on error
-        document.getElementById('cost-estimate').textContent = '$--';
-        document.querySelector('.estimate-time').textContent = '~--s';
+        UI.updateCostDisplayError();
     }
 }
 
-// Generate asset via AI pipeline
+// =============================================================================
+// Concept Workflow (Phase 1)
+// =============================================================================
+
+// Generate asset - routes to concept-first or direct based on toggle
 window.generateAsset = async function () {
-    const prompt = document.getElementById('ai-prompt')?.value?.trim();
+    const skipConcept = UI.ui.skipConceptCheckbox?.checked;
+
+    if (skipConcept) {
+        return generateAssetDirect();
+    }
+
+    const prompt = UI.ui.promptInput?.value?.trim();
     if (!prompt) {
-        logOutput('Please enter a prompt first', 'warning');
+        UI.logOutput('⚠️ Please enter a prompt first', 'warning');
+        return;
+    }
+
+    const activeType = document.querySelector('.type-btn.active')?.dataset.type || 'prop';
+    const activeStyles = Array.from(document.querySelectorAll('.style-chips .chip.active'))
+        .map(c => c.dataset.style);
+    const style = activeStyles.length > 0 ? activeStyles[0] : 'realistic';
+    const category = activeType.charAt(0).toUpperCase() + activeType.slice(1);
+
+    currentPrompt = prompt;
+    UI.logOutput(`🎨 Generating concept image for: "${prompt}"`, 'info');
+
+    // Update UI state
+    UI.updateGenerateButtonState(true, 'concept', '<span class="icon">🎨</span> <span>Generating Concept...</span>');
+    UI.hideConceptPreview();
+
+    try {
+        const response = await fetch('/api/generate/concept', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt: prompt,
+                category: category,
+                style: style,
+                aspect_ratio: '1:1'
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+
+        const { job_id } = await response.json();
+        currentConceptJobId = job_id;
+        UI.logOutput(`📋 Concept job queued: ${job_id}`, 'info');
+
+        pollConceptStatus(job_id);
+
+    } catch (err) {
+        UI.logOutput(`❌ Concept generation failed: ${err.message}`, 'error');
+        resetGenerateButton();
+    }
+};
+
+async function pollConceptStatus(jobId) {
+    const maxAttempts = 60; // 2 minutes max
+    let attempts = 0;
+
+    const poll = async () => {
+        attempts++;
+        try {
+            const response = await fetch(`/api/generate/concept/${jobId}`);
+            const data = await response.json();
+
+            if (data.status === 'ready') {
+                UI.logOutput('✅ Concept image ready! Review and approve to generate 3D.', 'success');
+                currentConceptImage = data.concept_image;
+                UI.showConceptPreview(data.concept_image, data.prompt || currentPrompt);
+                resetGenerateButton();
+                return;
+            } else if (data.status === 'failed') {
+                throw new Error(data.error || 'Concept generation failed');
+            } else if (data.status === 'generating') {
+                UI.logOutput(`⏳ Generating concept... (${attempts * 2}s)`, 'info');
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, 2000);
+                } else {
+                    throw new Error('Concept generation timed out');
+                }
+            } else if (attempts < maxAttempts) {
+                setTimeout(poll, 2000);
+            } else {
+                throw new Error('Concept generation timed out');
+            }
+        } catch (err) {
+            UI.logOutput(`❌ ${err.message}`, 'error');
+            resetGenerateButton();
+        }
+    };
+
+    poll();
+}
+
+function resetGenerateButton() {
+    const skipConcept = UI.ui.skipConceptCheckbox?.checked;
+    UI.updateGenerateButtonState(false, skipConcept ? 'direct' : 'concept');
+}
+
+// Approve concept and proceed to 3D generation
+async function approveConcept(jobId) {
+    UI.logOutput('✅ Concept approved! Starting 3D generation...', 'info');
+
+    UI.updateGenerateButtonState(true, 'concept', '<span class="icon">⏳</span> <span>Generating 3D...</span>');
+    UI.hideConceptPreview();
+
+    try {
+        const response = await fetch(`/api/generate/concept/${jobId}/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+
+        const { generation_job_id } = await response.json();
+        UI.logOutput(`📋 3D generation job: ${generation_job_id}`, 'info');
+
+        listenForGenerationComplete(generation_job_id);
+
+    } catch (err) {
+        UI.logOutput(`❌ Approval failed: ${err.message}`, 'error');
+        resetGenerateButton();
+    }
+}
+
+// Regenerate concept with feedback
+async function regenerateConcept(jobId, feedback) {
+    UI.logOutput(`🔄 Regenerating with feedback: "${feedback}"`, 'info');
+
+    UI.updateGenerateButtonState(true, 'concept', '<span class="icon">🎨</span> <span>Regenerating...</span>');
+    UI.hideConceptPreview();
+
+    try {
+        const response = await fetch(`/api/generate/concept/${jobId}/regenerate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                feedback: feedback,
+                use_previous_as_reference: true
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+
+        const { job_id: newJobId } = await response.json();
+        currentConceptJobId = newJobId;
+        UI.logOutput(`📋 New concept job: ${newJobId}`, 'info');
+
+        pollConceptStatus(newJobId);
+
+    } catch (err) {
+        UI.logOutput(`❌ Regeneration failed: ${err.message}`, 'error');
+        resetGenerateButton();
+    }
+}
+
+// Cancel concept and start fresh
+async function cancelConcept(jobId) {
+    try {
+        await fetch(`/api/generate/concept/${jobId}`, { method: 'DELETE' });
+    } catch (e) {
+        console.error('🔴 Failed to cancel concept:', e);
+    }
+
+    UI.hideConceptPreview();
+    currentConceptJobId = null;
+    currentConceptImage = null;
+    currentPrompt = null;
+
+    UI.logOutput('🚫 Concept cancelled. Enter a new prompt to try again.', 'info');
+}
+
+// Export for window access
+window.approveConcept = approveConcept;
+window.showRegenerateDialog = UI.showRegenerateDialog;
+window.cancelConcept = cancelConcept;
+
+
+// =============================================================================
+// Direct/3D Generation (Phase 2)
+// =============================================================================
+
+window.generateAssetDirect = async function () {
+    const prompt = UI.ui.promptInput?.value?.trim();
+    if (!prompt) {
+        UI.logOutput('⚠️ Please enter a prompt first', 'warning');
         return;
     }
 
@@ -120,22 +363,21 @@ window.generateAsset = async function () {
     const activeStyles = Array.from(document.querySelectorAll('.style-chips .chip.active'))
         .map(c => c.dataset.style);
 
-    // Build the full prompt with style context
+    // Get Quality Setting
+    const qualityLevels = ['Draft', 'Standard', 'High', 'Ultra'];
+    const qualityIdx = parseInt(UI.ui.qualitySlider?.value || "1");
+    const qualityTag = `[Quality: ${qualityLevels[qualityIdx]}]`;
+
     const styleStr = activeStyles.length > 0 ? ` (${activeStyles.join(', ')})` : '';
-    const fullPrompt = `${activeType}: ${prompt}${styleStr}`;
+    const fullPrompt = `${activeType}: ${prompt}${styleStr} ${qualityTag}`;
 
-    logOutput(`Starting generation: "${fullPrompt}"`, 'info');
+    UI.logOutput(`⚡ Starting direct 3D generation: "${prompt}"`, 'info');
 
-    // Disable button while generating
-    const btn = document.getElementById('btn-generate');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="icon">⏳</span> Generating...';
+    UI.updateGenerateButtonState(true, 'direct', '<span class="icon">⏳</span> <span>Generating 3D...</span>');
 
-    // Capitalize first letter for category (e.g. "weapon" -> "Weapon")
     const category = activeType.charAt(0).toUpperCase() + activeType.slice(1);
 
     try {
-        // POST to generate endpoint
         const response = await fetch('/api/generate/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -150,107 +392,122 @@ window.generateAsset = async function () {
             throw new Error(`HTTP ${response.status}: ${err}`);
         }
 
-        const { job_id, status } = await response.json();
-        logOutput(`Job queued: ${job_id}`, 'info');
+        const { job_id } = await response.json();
+        UI.logOutput(`📋 Job queued: ${job_id}`, 'info');
 
-        // Listen for WebSocket completion event instead of polling
         listenForGenerationComplete(job_id);
 
     } catch (err) {
-        logOutput(`Generation failed: ${err.message}`, 'error');
-        btn.disabled = false;
-        btn.innerHTML = '<span class="icon">⚡</span> Generate Asset';
+        UI.logOutput(`❌ Generation failed: ${err.message}`, 'error');
+        resetGenerateButton();
     }
 };
 
 function listenForGenerationComplete(jobId) {
-    const btn = document.getElementById('btn-generate');
-    
-    // Listen for generation progress events
+    currentGenerationJobId = jobId;
+    lastLoadedPreviewUrl = null;
+
+    UI.showStageProgress();
+    UI.resetStageProgress();
+
+    // Progress handler
     const progressHandler = (payload) => {
         if (payload.job_id === jobId) {
-            logOutput(`⏳ ${payload.status}...`, 'info');
+            UI.logOutput(`⏳ ${payload.status}...`, 'info');
         }
     };
     addEventListener('generate:progress', progressHandler);
-    
-    // Listen for generation complete event
+
+    // Stage complete handler
+    const stageCompleteHandler = (payload) => {
+        if (payload.job_id === jobId) {
+            const stageName = payload.stage;
+            const previewUrl = payload.preview_url;
+
+            if (previewUrl === lastLoadedPreviewUrl) return;
+            lastLoadedPreviewUrl = previewUrl;
+
+            UI.logOutput(`📺 Stage ${stageName} complete, loading preview...`, 'info');
+            UI.updateStageProgress(stageName, 'complete');
+
+            if (previewUrl && window.load_asset && window.viewportReady) {
+                if (window.clear_sdf) window.clear_sdf();
+                window.load_asset(previewUrl, `preview_${stageName}`);
+            }
+
+            const stages = ['A1', 'A2', 'A3'];
+            const nextIdx = stages.indexOf(stageName) + 1;
+            if (nextIdx < stages.length) {
+                UI.updateStageProgress(stages[nextIdx], 'active');
+            }
+        }
+    };
+    addEventListener('generate:stage_complete', stageCompleteHandler);
+
+    // Complete handler
     const completeHandler = (payload) => {
         if (payload.job_id === jobId) {
-            logOutput(`✅ Generation complete! Asset ID: ${payload.asset_id}`, 'success');
+            UI.logOutput(`✅ Generation complete! Asset ID: ${payload.asset_id}`, 'success');
             if (payload.result) {
-                logOutput(`   Time: ${payload.result.generation_time_sec?.toFixed(1)}s, Track: ${payload.result.track_used}`, 'info');
+                UI.logOutput(`   Time: ${payload.result.generation_time_sec?.toFixed(1)}s, Track: ${payload.result.track_used}`, 'info');
             }
-            
-            // Load asset in shared viewport
+
+            UI.updateStageProgress('A3', 'complete');
+
             if (payload.asset_id && window.load_asset && window.viewportReady) {
                 if (window.clear_sdf) window.clear_sdf();
                 window.load_asset(`/api/assets/${payload.asset_id}/binary`, payload.asset_id);
                 syncExternalViewport(payload.asset_id);
             }
 
-            // Show feedback UI with Add to Chain button
-            showFeedbackUI(payload.asset_id);
+            UI.showFeedbackUI(payload.asset_id);
+            // Wire Add to Chain button dynamically since switchAssetEditor is global
+            if (UI.ui.btnAddChain) {
+                UI.ui.btnAddChain.onclick = () => window.switchToAssetEditor(payload.asset_id);
+            }
 
-            btn.disabled = false;
-            btn.innerHTML = '<span class="icon">⚡</span> Generate Asset';
-            
-            // Clean up event listeners
+            resetGenerateButton();
+            currentGenerationJobId = null;
+            setTimeout(UI.hideStageProgress, 2000);
+
+            // Cleanup
             window.removeEventListener('gve:generate:complete', completeHandler);
             window.removeEventListener('gve:generate:progress', progressHandler);
+            window.removeEventListener('gve:generate:stage_complete', stageCompleteHandler);
             window.removeEventListener('gve:generate:failed', failedHandler);
         }
     };
     addEventListener('generate:complete', completeHandler);
-    
-    // Listen for generation failed event
+
+    // Failed handler
     const failedHandler = (payload) => {
         if (payload.job_id === jobId) {
-            logOutput(`❌ Generation failed: ${payload.error}`, 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<span class="icon">⚡</span> Generate Asset';
-            
-            // Clean up event listeners
+            UI.logOutput(`❌ Generation failed: ${payload.error}`, 'error');
+            resetGenerateButton();
+            UI.hideStageProgress();
+            currentGenerationJobId = null;
+
             window.removeEventListener('gve:generate:complete', completeHandler);
             window.removeEventListener('gve:generate:progress', progressHandler);
+            window.removeEventListener('gve:generate:stage_complete', stageCompleteHandler);
             window.removeEventListener('gve:generate:failed', failedHandler);
         }
     };
     addEventListener('generate:failed', failedHandler);
+
+    UI.updateStageProgress('A1', 'active');
 }
 
-// Feedback & Save Handlers
-function showFeedbackUI(assetId) {
-    // Show the save/rate container
-    const container = document.getElementById('feedback-container');
-    if (container) {
-        container.style.display = 'flex';
-        container.dataset.assetId = assetId;
-        // Reset state
-        document.querySelectorAll('.star-btn').forEach(b => b.classList.remove('active'));
-        const saveBtn = document.getElementById('btn-save-draft');
-        if (saveBtn) {
-            saveBtn.textContent = 'Save to Library';
-            saveBtn.disabled = false;
-        }
-        // Show Add to Chain button
-        const addBtn = document.getElementById('btn-add-to-chain');
-        if (addBtn) {
-            addBtn.style.display = 'block';
-            addBtn.onclick = () => window.switchToAssetEditor(assetId);
-        }
-    }
-}
+// =============================================================================
+// Feedback & Save
+// =============================================================================
 
 window.rateAsset = async function (rating) {
     const container = document.getElementById('feedback-container');
     const assetId = container?.dataset.assetId;
     if (!assetId) return;
 
-    // Visual update
-    document.querySelectorAll('.star-btn').forEach((btn, idx) => {
-        btn.classList.toggle('active', idx < rating);
-    });
+    UI.updateRatingVisuals(rating);
 
     try {
         await fetch(`/api/assets/${assetId}/feedback`, {
@@ -258,9 +515,9 @@ window.rateAsset = async function (rating) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ rating: rating })
         });
-        logOutput(`Rated ${rating} stars`, 'success');
+        UI.logOutput(`Rated ${rating} stars`, 'success');
     } catch (e) {
-        logOutput('Failed to submit rating', 'error');
+        UI.logOutput('Failed to submit rating', 'error');
         console.error(e);
     }
 };
@@ -268,18 +525,17 @@ window.rateAsset = async function (rating) {
 window.saveAsset = async function () {
     const container = document.getElementById('feedback-container');
     const assetId = container?.dataset.assetId;
-    const btn = document.getElementById('btn-save-draft');
 
-    if (!assetId || !btn) return;
+    if (!assetId || !UI.ui.btnSave) return;
 
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
+    UI.ui.btnSave.disabled = true;
+    UI.ui.btnSave.textContent = 'Saving...';
 
     try {
         const res = await fetch(`/api/assets/${assetId}/save`, { method: 'POST' });
         if (res.ok) {
-            logOutput('Asset saved to library and learnt!', 'success');
-            btn.textContent = 'Saved ✓';
+            UI.logOutput('Asset saved to library and learnt!', 'success');
+            UI.ui.btnSave.textContent = 'Saved ✓';
             // Refresh library view if open
             if (document.getElementById('page-library').style.display !== 'none') {
                 document.querySelector('.tab-btn.active')?.click();
@@ -288,12 +544,13 @@ window.saveAsset = async function () {
             throw new Error('Save failed');
         }
     } catch (e) {
-        logOutput('Failed to save asset', 'error');
-        btn.disabled = false;
-        btn.textContent = 'Save to Library';
+        UI.logOutput('Failed to save asset', 'error');
+        UI.ui.btnSave.disabled = false;
+        UI.ui.btnSave.textContent = 'Save to Library';
         console.error(e);
     }
 };
 
 // Initialize cost estimate on load
 updateCostEstimate();
+

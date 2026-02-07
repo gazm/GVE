@@ -64,7 +64,32 @@ These are the fundamental building blocks of the Signed Distance Field.
 * Capsule(radius, height): A cylinder with hemispherical caps. Essential for organic limbs and mechanical joints because it has no sharp edges to snag physics collisions.  
 * Torus(major\_r, minor\_r): A ring. major\_r is the distance from center to tube center; minor\_r is the tube radius.  
 * Cone(angle, height, sides): A capped cone. Supports segmentation via sides (e.g., 4 \= Pyramid).  
+* Wedge(size\_vec3, taper\_axis, taper\_dir): A triangular prism created by intersecting a box with a diagonal cutting plane. `taper_axis` is the axis that shrinks from full-width to zero (default "y"), `taper_dir` is the axis along which the taper progresses (default "z"). Ideal for gun stocks, ramps, fins, and blade edges.  
 * Plane(normal, dist): An infinite cutting plane. Usually used in Subtract operations to slice objects flat.
+
+### **1.1.1 CSG Operations**
+
+Boolean operations combine two or more child nodes into a single shape. Used inside `"type": "operation"` nodes.
+
+* **union**: Returns the minimum distance of children. Standard merge of shapes.
+* **subtract**: Cuts the second child from the first. `max(d1, -d2)`. Color from the first child.
+* **intersect**: Keeps only the overlapping volume. `max(d1, d2)`. Color from closest child.
+* **smooth\_union(smoothness)**: Polynomial smooth min (IQ). Blends shapes with rounded transitions. `smoothness` (k) controls blend radius in Game Units (default 0.5).
+* **smooth\_subtract(smoothness)**: Smooth subtraction producing filleted concave edges. Essential for realistic machined cutouts (barrel shrouds, ventilation slots). `smoothness` controls fillet radius.
+* **smooth\_intersect(smoothness)**: Smooth intersection producing filleted convex edges. Useful for organic armor plates and mechanical assemblies. `smoothness` controls fillet radius.
+
+**Example:**
+```json
+{
+  "type": "operation",
+  "op": "smooth_subtract",
+  "smoothness": 0.1,
+  "children": [
+    {"type": "primitive", "shape": "box", "params": {"size": [0.5, 0.5, 0.5]}},
+    {"type": "primitive", "shape": "sphere", "params": {"radius": 0.4}}
+  ]
+}
+```
 
 ### **1.2 Geometry Primitives (Advanced)**
 
@@ -87,6 +112,42 @@ Specialized shapes for complex surface details and effects.
 * Primitive\_Splat\_Foliage(type, height, radius):  
   * **Efficiency:** High. Bypasses SDF raymarching entirely. Uses soft sensor collision (![][image1] lookup).  
   * **Types:** bush, fern, grass\_clump.
+
+* Primitive\_Revolution(profile, axis, offset):
+  * **Action:** Spins a 2D child profile around an axis to create a solid of revolution.
+  * **Parameters:**
+    * `profile`: A child primitive node defining the 2D cross-section (evaluated in radial\_distance, height space).
+    * `axis`: Rotation axis ("x", "y", or "z"). Default: "y".
+    * `offset`: Distance from axis to profile center. 0 = solid revolution, >0 = torus-like shell.
+  * **Use Case:** Bottles, vases, goblets, gun barrels, rocket nozzles, columns, balusters, chess pieces, pulleys, doorknobs.
+  * **Example:** A wine glass = Box profile (thin rectangle) revolved around Y with offset for the stem, smooth-unioned with a wider Box profile at top.
+
+### **1.2.1 Fractal Primitives**
+
+Iterative SDF fractals that produce infinite detail. The `iterations` parameter controls detail level (higher = more detail, slower compilation).
+
+* Primitive\_Mandelbulb(power, iterations, scale):
+  * **Action:** Generates a 3D Mandelbrot fractal using power-N spherical coordinates.
+  * **Parameters:**
+    * `power`: Fractal exponent (default 8.0). Higher values create more lobes.
+    * `iterations`: Detail level (default 8, max 12). Each iteration doubles visual complexity.
+    * `scale`: World-space radius (default 1.0 GU).
+  * **Use Case:** Alien organisms, eldritch horrors, organic sculptures, procedural terrain features.
+* Primitive\_Menger(iterations, scale):
+  * **Action:** Generates a Menger Sponge via recursive cross-subtraction.
+  * **Parameters:**
+    * `iterations`: Recursion depth (default 3, max 5). Level 3 = 8,000 holes, Level 5 = 3.2M holes.
+    * `scale`: World-space half-extent (default 1.0 GU).
+  * **Use Case:** Sci-fi megastructures, infinite scaffolding, impossible architecture, decorative lattice.
+* Primitive\_Julia(c, iterations, scale):
+  * **Action:** Generates a 3D quaternion Julia set fractal.
+  * **Parameters:**
+    * `c`: Quaternion constant \[c0, c1, c2, c3\] controlling shape (default \[0.3, 0.5, 0.2, 0.1\]).
+    * `iterations`: Detail level (default 8, max 12).
+    * `scale`: World-space radius (default 1.0 GU).
+  * **Use Case:** Crystalline formations, procedural gems, fantasy runes, abstract art objects.
+
+> **Performance Note:** Fractal primitives are more expensive to compile than basic primitives due to iterative evaluation. Keep `iterations` to the minimum needed for visual quality. The compiler clamps iterations to safe maximums automatically.
 
 ### **1.3 Machining Macros**
 
@@ -120,6 +181,17 @@ Mathematical functions applied to the coordinate space of a Node *before* render
 * Effect\_Noise(type, scale, amplitude): Displaces surface with 3D Perlin/Voronoi noise.  
 * Effect\_Elongate(axis, length): Stretches the center of a shape without distorting the rounded corners (SDF specific operation).
 
+**Structural Modifiers (Pattern Generation):**
+
+* Effect\_Voronoi(cell\_size, wall\_thickness, mode):
+  * **Action:** Applies a 3D Voronoi cellular pattern to the child shape, creating organic cell-like structures.
+  * **Parameters:**
+    * `cell\_size`: Size of each Voronoi cell in Game Units (default 0.2). Smaller = finer pattern.
+    * `wall\_thickness`: Thickness of cell walls in Game Units (default 0.02).
+    * `mode`: "subtract" (default) carves cells from the solid, "intersect" keeps only cell walls.
+  * **Use Case:** Honeycomb armor panels, coral structures, bone cross-sections, sponge/foam materials, porous rock, organic alien surfaces.
+  * **Combines well with:** `Effect\_Shell` (hollow cells), `Effect\_Noise` (irregular cells), `smooth\_subtract` (rounded cell edges).
+
 **Topological Modifiers (Shape Changing):**
 
 * Effect\_Round(radius): Inflates the shape via d \- radius. Turns a Cube into a Sphere.  
@@ -138,8 +210,7 @@ Controls for material assignment and splat generation.
 {
   "material": {
     "spec_id": "ASTM_C114",  // Material from registry
-    "color_mode": "rgb|oklab",  // See §1.6.1
-    "base_color": "#FF5733" | [0.8, 0.2, 0.1],  // Hex or RGB array
+    "base_color": "#FF5733" | [0.8, 0.2, 0.1],  // Hex or sRGB [0-1] array (converted to Oklab internally)
     "metallic": 0.8,
     "roughness": 0.3,
     "emissive": [0.0, 0.5, 1.0],  // RGB additive glow
@@ -147,42 +218,26 @@ Controls for material assignment and splat generation.
 }
 ```
 
-#### 1.6.1 Color Mode Selection
+#### 1.6.1 Color Pipeline (Always Oklab)
 
 > [!IMPORTANT]
-> **Color Mode determines runtime behavior** (see `rendering-pipeline.md` §4.1)
+> **All splat colors are stored as Oklab u8.** The shader performs a single Oklab-to-linear-RGB conversion for PBR lighting. There is no RGB mode -- this eliminates redundant sRGB round-trips and ensures perceptually uniform quantisation.
 
-**RGB Mode (Default):**
-- Use for: Static environment props, terrain, non-dynamic objects
-- Runtime: Simple sRGB→linear conversion (~10 cycles/pixel)
-- Storage: RGBA8 (4 bytes packed)
+**Pipeline:**
+1. Input sRGB (material registry hex or AI `base_color`) -> `srgb_to_oklab()` (one call)
+2. All SDF math, procedural noise, and splat training operate in Oklab
+3. Export: quantise Oklab to u8 directly (L: 0-255, a/b: remap [-0.4, 0.4] to 0-255)
+4. Shader: dequantise Oklab u8 -> Oklab float -> linear RGB (matrix multiply) -> PBR
 
-**Oklab Mode:**
-- Use for: Weapons (wear effects), characters (team colors), destructible materials
-- Runtime: Enables smooth color interpolation without muddy transitions
-- Storage: Lab8 (4 bytes packed) + Oklab→RGB matrix multiply (~30 cycles/pixel)
-- Trade-off: 20 cycles slower, but essential for procedural color effects
+**Storage:** Oklab8+A (4 bytes packed, same size as RGBA8)
 
-**When to use Oklab:**
-```javascript
-// Weapon wear system (runtime color lerp)
-color_mode: "oklab"  // Smooth rust gradient
+**Why Oklab everywhere:**
+- Perceptually uniform: 1-step quantisation error looks the same across all colours
+- Smooth interpolation: CSG blending and procedural noise produce clean gradients
+- Single decode path in shader: no branching, no flag checking
+- Zero overhead: same 4 bytes as RGBA8
 
-// Character team colors (dynamic uniforms)
-color_mode: "oklab"  // Clean color blending
-
-// Damage tinting (health-based color shifts)
-color_mode: "oklab"  // Perceptually linear transitions
-```
-
-**When to use RGB:**
-```javascript
-// Static crates, walls, rocks
-color_mode: "rgb"  // Fastest rendering
-
-// Pre-baked color (no runtime changes)
-color_mode: "rgb"  // No interpolation needed
-```
+> **Note:** The `color_mode` field in DNA MaterialConfig is retained for future use but the compiler always produces Oklab output. The `flags` byte in the splat struct is always `0x01`.
 
 #### Surface Texture Modifiers
 
@@ -616,15 +671,15 @@ Render using splat pass (rendering-pipeline.md §4)
 ### 3.1 Binary File Structure
 
 ```rust
-// Header (64 bytes)
+// Header (84 bytes)
 struct GVEBinaryHeader {
-    magic: [u8; 4],          // "GVE1"
-    version: u32,            // Format version (0x00021000 for v2.1)
-    flags: u32,              // Bit flags (compression, LOD levels, etc.)
+    magic: [u8; 4],              // "GVE1"
+    version: u32,                // Format version (0x00021000 for v2.1)
+    flags: u32,                  // Bit flags (compression, LOD levels, etc.)
     
     // Offsets to data sections
     sdf_bytecode_offset: u64,
-    volume_data_offset: u64,   // (Was sdf_texture_offset in v2.0)
+    volume_data_offset: u64,     // (Was sdf_texture_offset in v2.0)
     splat_data_offset: u64,
     shell_mesh_offset: u64,
     audio_patch_offset: u64,
@@ -632,7 +687,7 @@ struct GVEBinaryHeader {
     
     // Size fields
     sdf_bytecode_size: u32,
-    sdf_texture_size: u32,
+    volume_size: u32,            // (Was sdf_texture_size in v2.0)
     splat_count: u32,
     vertex_count: u32,
     
@@ -645,24 +700,41 @@ struct GVEBinaryHeader {
 **Purpose:** LOD 0 (math evaluation) - see `rendering-pipeline.md` §3.3
 
 ```rust
-struct SDFBytecode {
+/// SDF Bytecode section header (32 bytes)
+struct SDFBytecodeHeader {
     instruction_count: u32,
-    instructions: [SDFInstruction; instruction_count],
+    bounds_min: [f32; 3],
+    bounds_max: [f32; 3],
+    _reserved: u32,
 }
 
-enum SDFInstruction {
-    Primitive { op: u8, params: [f32; 8] },      // 33 bytes
-    BinaryOp { op: u8, left_idx: u16, right_idx: u16 },  // 5 bytes
-    Modifier { op: u8, child_idx: u16, params: [f32; 4] },  // 19 bytes
+/// Generic SDF instruction container (40 bytes - fixed size for GPU alignment)
+/// instr_type determines which variant to interpret
+#[repr(C)]
+struct SDFInstruction {
+    instr_type: u8,     // 0=Primitive, 1=BinaryOp, 2=Modifier
+    op: u8,             // Actual operation code (see tables below)
+    operand1: u16,      // child_idx or left_idx
+    operand2: u16,      // right_idx (for binary ops)
+    _reserved: u16,
+    params: [f32; 8],   // 32 bytes (only used by primitives/modifiers)
 }
 
-// Example ops:
-// Primitive: 0x01=Sphere, 0x02=Box, 0x03=Cylinder
-// BinaryOp: 0x10=Union, 0x11=Subtract, 0x12=Intersect, 0x13=SmoothUnion
-// Modifier: 0x20=Twist, 0x21=Bend, 0x22=Mirror
+// Primitive ops (12):
+//   0x01=Sphere, 0x02=Box, 0x03=Cylinder, 0x04=Capsule,
+//   0x05=Torus, 0x06=Cone, 0x07=Plane, 0x08=Revolution,
+//   0x09=Mandelbulb, 0x0A=MengerSponge, 0x0B=JuliaSet, 0x0C=Wedge
+//
+// Binary ops (6):
+//   0x10=Union, 0x11=Subtract, 0x12=Intersect,
+//   0x13=SmoothUnion, 0x14=SmoothSubtract, 0x15=SmoothIntersect
+//
+// Modifier ops (6):
+//   0x20=Twist, 0x21=Bend, 0x22=Mirror,
+//   0x23=Round, 0x24=Elongate, 0x25=Voronoi
 ```
 
-**Size:** Typical asset: 10-30 instructions ≈ 200-600 bytes
+**Size:** Typical asset: 10-30 instructions × 40 bytes ≈ 400-1200 bytes + 32-byte header
 
 ### 3.3 Volume Data Section (LOD 1)
 
@@ -698,26 +770,27 @@ struct SplatLODPyramid {
     lod2_count: u32,  // 5k splats (distant)
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 struct Splat {
     position: [f32; 3],      // 12 bytes
     scale: [f32; 3],         // 12 bytes (ellipsoid radii)
     rotation: [f32; 4],      // 16 bytes (quaternion)
-    color_packed: u32,       // 4 bytes (RGBA8 or Oklab8)
-    flags: u8,               // 1 byte (bit 0: color_mode, bits 1-7: reserved)
-    _padding: [u8; 3],       // 3 bytes (alignment)
+    color_packed: u32,       // 4 bytes (Oklab8+A — always Oklab)
+    metallic: u8,            // 1 byte  (0-255 -> 0.0-1.0 PBR metallic)
+    roughness: u8,           // 1 byte  (0-255 -> 0.0-1.0 PBR roughness)
+    flags: u8,               // 1 byte  (0x01 = Oklab, always set)
+    _padding: u8,            // 1 byte  (alignment)
 }  // Total: 48 bytes per splat
 ```
 
-**Color Packing:**
+**Color Packing (Oklab — single format):**
 ```rust
-// RGB mode (flags & 0x01 == 0)
-color_packed = (R << 24) | (G << 16) | (B << 8) | A
-
-// Oklab mode (flags & 0x01 == 1)  
-color_packed = (L << 24) | (a_scaled << 16) | (b_scaled << 8) | A
-// where: a_scaled = (a + 0.4) / 0.8 * 255
-//        b_scaled = (b + 0.4) / 0.8 * 255
+// flags is always 0x01 (Oklab)
+color_packed = (L_u8 << 24) | (a_scaled << 16) | (b_scaled << 8) | A_u8
+// where: L_u8     = clamp(L * 255, 0, 255)
+//        a_scaled = clamp((a + 0.4) / 0.8 * 255, 0, 255)
+//        b_scaled = clamp((b + 0.4) / 0.8 * 255, 0, 255)
+//        A_u8     = clamp(alpha * 255, 0, 255)
 ```
 
 **Size:** 70k splats × 48 bytes ≈ 3.36MB (uncompressed)
@@ -814,12 +887,12 @@ struct MaterialRef {
 
 ```
 ┌───────────────────────────┐ Offset 0
-│ GVEBinaryHeader (64 bytes)│
+│ GVEBinaryHeader (84 bytes)│
 ├───────────────────────────┤
 │ SDF Bytecode Section      │ → LOD 0 (math eval)
 │  ~200-600 bytes           │
 ├───────────────────────────┤
-│ SDF Texture Section       │ → LOD 1 (baked texture)
+│ Volume Data Section       │ → LOD 1 (VDB volume)
 │  ~2-4 MB (compressed)     │
 ├───────────────────────────┤
 │ Splat Data Section        │ → LOD 2 (splats)
@@ -879,11 +952,11 @@ User Prompt
            ↓ (dna.json)
 ┌─────────────────────┐
 │ Python Compiler     │ → See: compiler-pipeline.md
-│  ├─ Resolve $vars  │
-│  ├─ Resolve @anchors│
-│  ├─ Bake SDF texture│
-│  ├─ Train splats    │
-│  └─ Generate shell  │
+│  ├─ Build SDF graph │  (math_jit - resolves $vars/@anchors)
+│  ├─ Bake VDB volume │  (vdb_converter - dense grid + VDB)
+│  ├─ Generate shell  │  (mesh_repair - MeshLib from VDB)
+│  ├─ Train splats    │  (splat_trainer - Gaussian splatting)
+│  └─ Write .gve_bin  │  (binary_writer - pack all sections)
 └──────────┬──────────┘
            ↓ (.gve_bin)
 ┌─────────────────────┐
@@ -897,8 +970,8 @@ User Prompt
 ---
 
 **Status:** ✅ Complete  
-**Last Updated:** January 25, 2026  
-**Version:** 2.0  
+**Last Updated:** February 6, 2026  
+**Version:** 2.1  
 
 
 [image1]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAYCAYAAACIhL/AAAACrklEQVR4Xu2WO2hTURzGb6gBwReJeZnHSaguguCgKEIFRx0UKSKC3RXsoIIKunR1k+oUhKKgdCjo4lIchC71AYpYndxcdBEEBQervy85x557yL1NqYUI/eDHvfl/5/E/z5soWtcAqV6vHxTNZvNC6CXJGDPcaDQu8ZoNvTRl1BGVZ+hsnucrnm94nhb4Q2EFyh/AmxbFYnFz6KNstVptiNCg7VHqXeQ1Y1lWg5kgneSF7Wgqn89v9bxdNPRB4F2NvIaUELHHsE+4eNRNipAZo95rnveE5ztlid9nqU+I0Owol8tto9BTSzvqsSfo5KzlJxxycRo9w++HvG6wdFSpVFq0NWG6M/8yJUFNwFG8WdFrBTSCtpuhUqlUDgtIxs4QfCepy4q1Wq2N1HmixMPyTuoQ/1lagsx0Ae+58Affkc1+EWNcxExPfoJwzcaGYaFWq+0Nyzv1kyDKUOaBcIPvyJuBrxh7hFcpJsqMWn57CY7w+z3sCMs79Zmgtsp1ESvDyOsEPsFcoVDYIrw6MVFmUihBZv2YjR1X5732jVO/CWrQItaesUumqY1Sjrn2ZXPpFL8rl8slxdcT1OYm8C2tooQ/BouWMS++tgna473ggr06svfZR2iLyLsjlaDqqx2vSkwrTRBmIu8+1ek5T/AHz8Niqcrf5F7AFMu6Sfi+6W6RtzpsftxXvwlS5q6gzGToZTFuwGehe4hCp+CWOjcJ31/JroAGMBJ62qfE52jzS7N7Nf2y6NaY9gerd2O/JImfO7fEXCFHKHQSdkYJiXnSBXuHhidCYyWijd0wL+i/Fvqrkuku8yzLvF2Efj8isXENcrUDTZJm8QqNnxOhuZy0z6n/SFvCXV//WgOfoKR/RDeF/ryGZpJ0ONjrt2F/6K2FdKCG0r7nPZQNr67/Sn8Ad2T1YadvDLwAAAAASUVORK5CYII=>

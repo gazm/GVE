@@ -138,13 +138,53 @@ class AssetLibrarian:
             results.append(AssetMetadata(**doc))
         return results
 
-    async def search_assets(self, query: str) -> List[AssetMetadata]:
+    async def list_assets_by_tags(
+        self,
+        tags: list[str],
+        limit: int = 50,
+        skip: int = 0,
+    ) -> list[AssetMetadata]:
+        """List assets that have at least one of the given tags. Filtering done in MongoDB."""
+        await self._ensure_db()
+        cursor = (
+            self.db.assets
+            .find({"is_draft": {"$ne": True}, "tags": {"$in": tags}})
+            .skip(skip)
+            .limit(limit)
+        )
+        results: list[AssetMetadata] = []
+        async for doc in cursor:
+            doc["id"] = doc.pop("_id")
+            if "meta" in doc:
+                meta = doc.pop("meta")
+                if "category" not in doc and "category" in meta:
+                    doc["category"] = meta["category"]
+                if "tags" not in doc and "tags" in meta:
+                    doc["tags"] = meta["tags"]
+            if "category" not in doc:
+                doc["category"] = "Prop"
+            if "tags" not in doc:
+                doc["tags"] = []
+            if "settings" not in doc:
+                doc["settings"] = {"lod_count": 3, "resolution": 128}
+            if "version" not in doc:
+                doc["version"] = 1
+            if isinstance(doc["category"], str):
+                cat = doc["category"].lower()
+                doc["category"] = {
+                    "prop": "Prop", "primitive": "Primitive",
+                    "character": "Character", "environment": "Environment",
+                }.get(cat, "Prop")
+            results.append(AssetMetadata(**doc))
+        return results
+
+    async def search_assets(self, query: str, limit: int = 50) -> list[AssetMetadata]:
         await self._ensure_db()
         # Simple regex search for prototype (excluding drafts)
         cursor = self.db.assets.find({
             "name": {"$regex": query, "$options": "i"},
             "is_draft": {"$ne": True}
-        })
+        }).limit(limit)
         results = []
         async for doc in cursor:
             doc["id"] = doc.pop("_id")
@@ -307,6 +347,96 @@ class AssetLibrarian:
         )
         return result.modified_count > 0
 
+    # =========================================================================
+    # Concept Image RAG (Learning Loop)
+    # =========================================================================
+
+    async def store_concept_rag(
+        self,
+        asset_id: str,
+        prompt: str,
+        embedding: List[float],
+        concept_image: str,
+        dna: Optional[dict] = None,
+    ) -> None:
+        """
+        Store approved concept image for RAG retrieval.
+        
+        Creates entry in concepts collection for semantic search.
+        Links concept to the asset that was successfully generated.
+        """
+        await self._ensure_db()
+        
+        doc = {
+            "_id": str(ObjectId()),
+            "asset_id": asset_id,
+            "prompt": prompt,
+            "embedding": embedding,
+            "concept_image": concept_image,
+            "dna": dna,
+            "created_at": datetime.utcnow(),
+            "approved": True,
+        }
+        
+        await self.db.concepts.insert_one(doc)
+
+    async def search_concepts(
+        self,
+        query_embedding: List[float],
+        limit: int = 3,
+    ) -> List[dict]:
+        """
+        Search for similar approved concepts using vector search.
+        
+        Returns concept documents with similarity scores.
+        Requires 'concept_vectors' index on embedding field.
+        """
+        await self._ensure_db()
+        
+        # Try vector search first
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "concept_vectors",
+                    "path": "embedding",
+                    "queryVector": query_embedding,
+                    "numCandidates": limit * 10,
+                    "limit": limit,
+                    "filter": {"approved": True},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "asset_id": 1,
+                    "prompt": 1,
+                    "concept_image": 1,
+                    "dna": 1,
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+        
+        results = []
+        try:
+            async for doc in self.db.concepts.aggregate(pipeline):
+                results.append(doc)
+        except Exception as e:
+            # Fallback: return recent approved concepts if vector search fails
+            print(f"⚠️ Concept vector search failed: {e}")
+            try:
+                cursor = self.db.concepts.find(
+                    {"approved": True}
+                ).sort("created_at", -1).limit(limit)
+                
+                async for doc in cursor:
+                    doc["score"] = 0.5  # Default score for fallback
+                    results.append(doc)
+            except Exception as e2:
+                print(f"⚠️ Concept fallback search also failed: {e2}")
+        
+        return results
+
     async def close_connections(self) -> None:
         """Close database connections. Call on application shutdown."""
         if self.client:
@@ -322,6 +452,7 @@ load_asset = _librarian.load_asset
 save_asset = _librarian.save_asset
 delete_asset = _librarian.delete_asset
 list_assets = _librarian.list_assets
+list_assets_by_tags = _librarian.list_assets_by_tags
 search_assets = _librarian.search_assets
 close_connections = _librarian.close_connections
 vector_search = _librarian.vector_search
@@ -329,3 +460,7 @@ update_asset_rag = _librarian.update_asset_rag
 save_asset_doc = _librarian.save_asset_doc
 load_asset_doc = _librarian.load_asset_doc
 update_asset_field = _librarian.update_asset_field
+
+# Concept RAG wrappers
+store_concept_rag = _librarian.store_concept_rag
+search_concepts = _librarian.search_concepts

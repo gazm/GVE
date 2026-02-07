@@ -1,14 +1,13 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
-from bson import ObjectId
 from pathlib import Path
 
 from src.librarian import (
     load_asset, save_asset, delete_asset, list_assets, search_assets, 
-    update_asset_field, update_asset_rag, load_asset_doc
+    update_asset_field, update_asset_rag, load_asset_doc,
+    resolve_cache_path,
 )
-from src.librarian.cache import resolve_cache_path
-from src.ai_pipeline import index_asset
+# index_asset imported lazily below to avoid loading torch/ROCm at startup
 from generated.types import AssetMetadata
 from .templates import templates
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -29,8 +28,8 @@ async def get_assets(limit: int = 50, skip: int = 0):
     return await list_assets(limit=limit, skip=skip)
 
 @router.get("/search", response_model=List[AssetMetadata])
-async def find_assets(q: str = Query(..., min_length=1)):
-    return await search_assets(q)
+async def find_assets(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=200)):
+    return await search_assets(q, limit=limit)
 
 # IMPORTANT: More specific routes must come BEFORE less specific ones
 @router.get("/{asset_id}/binary")
@@ -83,10 +82,10 @@ async def save_draft(asset_id: str, background_tasks: BackgroundTasks):
     if not success:
         raise HTTPException(status_code=404, detail="Asset not found")
     
-    # 2. Trigger RAG Indexing (Learning)
-    # Load raw doc to get DNA for indexing
+    # 2. Trigger RAG Indexing (Learning) - lazy import to avoid torch/ROCm at startup
     doc = await load_asset_doc(asset_id)
     if doc and "dna" in doc:
+        from src.ai_pipeline import index_asset
         background_tasks.add_task(index_asset, asset_id, doc["dna"])
         
     return {"status": "saved", "message": "Asset saved to library and indexed for learning"}
@@ -105,11 +104,11 @@ async def rate_asset(asset_id: str, background_tasks: BackgroundTasks, rating: i
     if not success:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # If good rating, ensure it's learnt
+    # If good rating, ensure it's learnt - lazy import to avoid torch/ROCm at startup
     if rating >= 4:
         doc = await load_asset_doc(asset_id)
         if doc and "dna" in doc:
-            # We re-index to boost its reinforcement
+            from src.ai_pipeline import index_asset
             background_tasks.add_task(index_asset, asset_id, doc["dna"])
             
     return {"status": "rated", "rating": rating}
@@ -242,8 +241,8 @@ async def search_assets_partial(request: Request, q: str = Query("", min_length=
     if not q:
         items = [] # Or return popular/recent
     else:
-        items = await search_assets(q)
-    return templates.TemplateResponse("library_grid.html", {"request": request, "items": items, "library_type": "geometry"}) # Default type
+        items = await search_assets(q, limit=50)
+    return templates.TemplateResponse("library_grid.html", {"request": request, "items": items, "library_type": "geometry"})
 
 @router.get("/partials/browser", response_class=HTMLResponse)
 async def get_browser_partial(request: Request):
@@ -252,46 +251,26 @@ async def get_browser_partial(request: Request):
 @router.get("/partials/editor/{card_id}", response_class=HTMLResponse)
 async def get_editor_partial(card_id: str, request: Request):
     asset = await load_asset(card_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
     
-    # Map AssetSettings to property groups or return mock for testing
-    if card_id == "1":
-        card_name = "AK Receiver"
-        property_groups = [
-            {
-                "name": "Transform",
-                "properties": [
-                    {"name": "pos_x", "label": "Position X", "type": "number", "min": -100, "max": 100, "value": 0},
-                    {"name": "pos_y", "label": "Position Y", "type": "number", "min": -100, "max": 100, "value": 0},
-                ]
-            },
-            {
-                "name": "Material",
-                "properties": [
-                    {"name": "roughness", "label": "Roughness", "type": "range", "min": 0, "max": 1, "value": 0.5},
-                    {"name": "metalness", "label": "Metalness", "type": "range", "min": 0, "max": 1, "value": 0.8},
-                ]
-            }
-        ]
-    else:
-        if not asset:
-            raise HTTPException(status_code=404, detail="Asset not found")
-        card_name = asset.name
-        property_groups = [
-            {
-                "name": "General Settings",
-                "properties": [
-                    {"name": "name", "label": "Asset Name", "type": "text", "value": asset.name},
-                    {"name": "category", "label": "Category", "type": "text", "value": asset.category.value, "readonly": True},
-                ]
-            },
-            {
-                "name": "Optimization",
-                "properties": [
-                    {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": asset.settings.lod_count},
-                    {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": asset.settings.resolution},
-                ]
-            }
-        ]
+    card_name = asset.name
+    property_groups = [
+        {
+            "name": "General Settings",
+            "properties": [
+                {"name": "name", "label": "Asset Name", "type": "text", "value": asset.name},
+                {"name": "category", "label": "Category", "type": "text", "value": asset.category.value, "readonly": True},
+            ]
+        },
+        {
+            "name": "Optimization",
+            "properties": [
+                {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": asset.settings.lod_count},
+                {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": asset.settings.resolution},
+            ]
+        }
+    ]
     
     return templates.TemplateResponse("property_editor.html", {
         "request": request,
@@ -305,7 +284,7 @@ from .websocket import broadcast_event
 @router.post("/partials/property/{card_id}", response_class=HTMLResponse)
 async def update_property(card_id: str, request: Request):
     form_data = await request.form()
-    print(f"Updating property for {card_id}: {form_data}")
+    print(f"🔧 Updating property for {card_id}: {form_data}")
     
     asset = await load_asset(card_id)
     if asset:
@@ -322,15 +301,35 @@ async def update_property(card_id: str, request: Request):
         # Save back to Librarian (this triggers background compilation)
         await save_asset(asset)
     
-    # Simulate a compilation progress event for UI feedback
+    # Broadcast compilation progress event for UI feedback
     await broadcast_event("compile:progress", {
         "asset_id": card_id,
         "progress": 15,
         "status": "Saving & Validating..."
     })
     
-    # Re-render the property editor and progress bar
-    editor_html = (await get_editor_partial(card_id, request)).body.decode()
+    # Render both partials directly via templates (avoids double-render through endpoint)
+    editor_html = templates.get_template("property_editor.html").render({
+        "request": request,
+        "card_id": card_id,
+        "card_name": asset.name if asset else card_id,
+        "property_groups": [
+            {
+                "name": "General Settings",
+                "properties": [
+                    {"name": "name", "label": "Asset Name", "type": "text", "value": asset.name},
+                    {"name": "category", "label": "Category", "type": "text", "value": asset.category.value, "readonly": True},
+                ]
+            },
+            {
+                "name": "Optimization",
+                "properties": [
+                    {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": asset.settings.lod_count},
+                    {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": asset.settings.resolution},
+                ]
+            }
+        ] if asset else []
+    })
     progress_html = templates.get_template("progress_bar.html").render({
         "asset_id": card_id,
         "progress": 15,

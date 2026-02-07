@@ -3,7 +3,8 @@
 //! # Module Structure
 //!
 //! - `pipeline` - Core Renderer struct and rendering logic
-//! - `shaders` - WGSL shader sources
+//! - `shaders` - SDF + Mesh WGSL shader sources
+//! - `shaders_extra` - Splat + Volume WGSL shader sources
 //! - `types` - Type definitions (uniforms, loaded assets, config)
 //! - `loaders` - Binary parsing for .gve_bin files
 //! - `test_geometry` - Debug meshes and SDFs for testing
@@ -20,6 +21,7 @@
 
 pub mod pipeline;
 pub mod shaders;
+pub mod shaders_extra;
 pub mod types;
 pub mod loaders;
 pub mod test_geometry;

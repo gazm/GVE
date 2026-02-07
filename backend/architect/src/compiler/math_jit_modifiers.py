@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -19,7 +19,7 @@ class TransformNode(nn.Module):
         q = torch.tensor(rot, dtype=torch.float32)
         self.register_buffer('quat', q / (torch.norm(q) + 1e-8))  # Normalize
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Translate points to local space (subtract position)
         local_p = x - self.translation
         # Rotate points by inverse quaternion
@@ -50,7 +50,7 @@ class TwistModifier(nn.Module):
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 1)
         self.rate = rate
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Get the component along the twist axis
         axis_val = x[:, self.axis_idx]
         angle = axis_val * self.rate
@@ -77,7 +77,7 @@ class BendModifier(nn.Module):
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 0)
         self.k = angle  # Bend rate
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Bending is more complex - simplified version
         if self.axis_idx == 0:  # Bend around X - affects YZ based on Y
             c = torch.cos(self.k * x[:, 1])
@@ -104,14 +104,15 @@ class TaperModifier(nn.Module):
         self.scale_min = scale_min
         self.scale_max = scale_max
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Normalize axis position to 0-1 range (assuming object spans -1 to 1)
         axis_val = x[:, self.axis_idx]
         t = (axis_val + 1.0) / 2.0
         t = torch.clamp(t, 0.0, 1.0)
         
-        # Interpolate scale
+        # Interpolate scale (clamped to avoid division-by-zero for aggressive tapers)
         scale = self.scale_min + t * (self.scale_max - self.scale_min)
+        scale = torch.clamp(scale, min=1e-4)
         scale = scale.unsqueeze(1)  # [N, 1] for broadcasting
         
         # Scale the perpendicular axes
@@ -132,7 +133,7 @@ class MirrorModifier(nn.Module):
         self.child = child
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 0)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Take absolute value of the mirrored axis
         mirrored = x.clone()
         mirrored[:, self.axis_idx] = torch.abs(mirrored[:, self.axis_idx])
@@ -146,9 +147,80 @@ class RoundModifier(nn.Module):
         self.child = child
         self.radius = radius
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Rounding just subtracts from the distance
-        return self.child(x) - self.radius
+        dist, mat = self.child(x)
+        return dist - self.radius, mat
+
+
+# Pre-computed 27-neighbor offsets for vectorized Voronoi evaluation
+_NEIGHBOR_OFFSETS = torch.tensor(
+    [[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)],
+    dtype=torch.float32,
+)  # [27, 3]
+
+
+def _voronoi_hash(p: torch.Tensor) -> torch.Tensor:
+    """Deterministic 3D hash: [N, 3] -> [N, 3] in [0, 1).
+    
+    Uses integer-arithmetic-based hash for GPU-reproducible results.
+    """
+    # Modular hashing via large primes (matches WGSL implementation)
+    p_int = (p * 127.1 + 311.7).sin() * 43758.5453
+    return p_int - torch.floor(p_int)
+
+
+class VoronoiModifier(nn.Module):
+    """Voronoi cellular pattern modifier. Vectorized 27-neighbor evaluation.
+    
+    Applies a 3D Voronoi pattern to the child SDF, creating cell structures.
+    
+    Args:
+        child: Child SDF node to modify.
+        cell_size: Size of each Voronoi cell in world units.
+        wall_thickness: Thickness of cell walls.
+        mode: 'subtract' carves cells, 'intersect' keeps only walls.
+    """
+    def __init__(self, child: nn.Module, cell_size: float = 0.2,
+                 wall_thickness: float = 0.02, mode: str = "subtract"):
+        super().__init__()
+        self.child = child
+        self.cell_size = cell_size
+        self.wall_thickness = wall_thickness
+        self.mode = mode
+        # Register as buffer so it moves to correct device with model
+        self.register_buffer('offsets', _NEIGHBOR_OFFSETS.clone())
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        child_dist, child_color = self.child(x)
+        
+        # Compute Voronoi cell distance - fully vectorized
+        scaled = x / self.cell_size
+        cell = torch.floor(scaled)  # [N, 3]
+        
+        # All 27 neighbor centers: [N, 27, 3]
+        neighbors = cell.unsqueeze(1) + self.offsets.unsqueeze(0)  # broadcast [N,1,3] + [1,27,3]
+        
+        # Hash neighbor cells to get jittered centers
+        flat_neighbors = neighbors.reshape(-1, 3)
+        jitter = _voronoi_hash(flat_neighbors)
+        centers = (flat_neighbors + jitter) * self.cell_size  # world-space centers
+        centers = centers.reshape(x.shape[0], 27, 3)  # [N, 27, 3]
+        
+        # Distance from each point to each center: [N, 27]
+        diffs = x.unsqueeze(1) - centers  # [N, 27, 3]
+        dists_to_centers = torch.norm(diffs, dim=2)  # [N, 27]
+        
+        # Minimum distance to nearest cell center
+        voronoi_dist = torch.min(dists_to_centers, dim=1)[0] - self.wall_thickness
+        
+        # Combine with child SDF
+        if self.mode == "intersect":
+            result_dist = torch.max(child_dist, voronoi_dist)
+        else:  # subtract (default)
+            result_dist = torch.max(child_dist, -voronoi_dist)
+        
+        return result_dist, child_color
 
 
 def build_modifier(child: nn.Module, modifier_data: Dict) -> nn.Module:
@@ -183,6 +255,13 @@ def build_modifier(child: nn.Module, modifier_data: Dict) -> nn.Module:
         return RoundModifier(
             child,
             radius=float(modifier_data.get("radius", 0.02))
+        )
+    elif mod_type == "voronoi":
+        return VoronoiModifier(
+            child,
+            cell_size=float(modifier_data.get("cell_size", 0.2)),
+            wall_thickness=float(modifier_data.get("wall_thickness", 0.02)),
+            mode=modifier_data.get("mode", "subtract"),
         )
     else:
         # Unknown modifier, return child unchanged

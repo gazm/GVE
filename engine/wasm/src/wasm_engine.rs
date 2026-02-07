@@ -10,9 +10,7 @@ pub struct WasmEngine {
     // Future: physics, audio, message_queue
 }
 
-// SAFETY: On WASM, we are limited to a single thread for now.
-unsafe impl Send for WasmEngine {}
-unsafe impl Sync for WasmEngine {}
+// Note: Send/Sync not needed — WasmEngine lives in thread_local! RefCell.
 
 impl WasmEngine {
     pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, JsValue> {
@@ -37,7 +35,8 @@ impl WasmEngine {
         // The surface needs to be 'static for the Renderer struct.
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
 
-        web_sys::console::log_1(&"Requesting WebGL2 adapter...".into());
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&"🔌 Requesting WebGL2 adapter...".into());
         let adapter = instance.request_adapter(
             &wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -50,13 +49,16 @@ impl WasmEngine {
             JsValue::from_str(msg)
         })?;
 
-        let info = adapter.get_info();
-        web_sys::console::log_1(&format!("Using adapter: {:?} ({:?})", info.name, info.backend).into());
+        #[cfg(debug_assertions)]
+        {
+            let info = adapter.get_info();
+            web_sys::console::log_1(&format!("🖥️ Using adapter: {:?} ({:?})", info.name, info.backend).into());
+        }
 
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::FLOAT32_FILTERABLE,
                 // Use minimum WebGL2 limits to ensure compatibility
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
                 memory_hints: Default::default(),
@@ -123,21 +125,27 @@ impl WasmEngine {
     }
 
     pub fn handle_load_chunk(&mut self, chunk_id: u64, x: i32, z: i32) {
-        web_sys::console::log_1(&format!("LoadChunk request: chunk_id={}, x={}, z={}", chunk_id, x, z).into());
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&format!("📦 LoadChunk: chunk_id={}, x={}, z={}", chunk_id, x, z).into());
         // Future: request builder to fetch chunk binary + renderer update
+        let _ = (chunk_id, x, z);
     }
 
     pub fn translate_node(&mut self, node_id: u64, dx: f32, dy: f32, dz: f32) {
+        #[cfg(debug_assertions)]
         web_sys::console::log_1(&format!(
-            "TranslateNode: node_id={}, dx={}, dy={}, dz={}",
+            "↔️ TranslateNode: node_id={}, d=({}, {}, {})",
             node_id, dx, dy, dz
         ).into());
+        let _ = (node_id, dx, dy, dz);
     }
 
     pub fn update_joint(&mut self, joint_id: u64, quat: [f32; 4]) {
+        #[cfg(debug_assertions)]
         web_sys::console::log_1(&format!(
-            "UpdateJoint: joint_id={}, quat=({:.3}, {:.3}, {:.3}, {:.3})",
+            "🦴 UpdateJoint: joint_id={}, q=({:.3}, {:.3}, {:.3}, {:.3})",
             joint_id, quat[0], quat[1], quat[2], quat[3]
         ).into());
+        let _ = (joint_id, quat);
     }
 }

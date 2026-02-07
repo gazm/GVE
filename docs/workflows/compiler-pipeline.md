@@ -4,8 +4,8 @@
 **Strategy:** JIT Baking with Gradient-Based Refinement  
 **Philosophy:** Treat JSON recipes as source code requiring compilation, optimization, and linking
 
-**Version:** 1.1  
-**Last Updated:** January 28, 2026
+**Version:** 1.2  
+**Last Updated: 2026-02-07
 
 **Related Docs:**
 - [System Overview](../architecture/overview.md) - High-level architecture
@@ -351,8 +351,8 @@ Align gaussian splats to SDF surface with perceptually uniform colors.
 def initialize_splats_poisson(
     sdf_fn: Callable,
     bounds: AABB,
-    target_count: int = 100000,
-    min_radius: float = 0.01,
+    target_count: int = 10000,
+    min_radius: float = 0.02,
 ) -> List[Splat]:
     """
     Generate initial splat distribution using Poisson disk sampling.
@@ -555,48 +555,33 @@ class SplatOptimizer:
             self.scales = self.scales[keep_mask]
             # ... prune other parameters
     
-    def export_splats(self, output_path: str, color_mode: str = "rgb"):
+    def export_splats(self, output_path: str):
         """
-        Export trained splats with configurable color mode.
-        
-        Args:
-            color_mode: "rgb" for static assets, "oklab" for dynamic/procedural
+        Export trained splats.  Always encodes colour as Oklab u8.
+        The GPU shader performs the single Oklab -> linear RGB conversion.
         """
-        splats_data = []
-        
-        for i in range(len(self.positions)):
-            oklab = self.colors_oklab[i].detach().cpu().numpy()
-            
-            if color_mode == "rgb":
-                # Convert Oklab (training space) to RGB for static assets
-                rgb_linear = oklab_to_linear_rgb(oklab)
-                rgb_srgb = linear_to_srgb(rgb_linear)
-                
-                color_packed = [
-                    int(np.clip(rgb_srgb[0] * 255, 0, 255)),
-                    int(np.clip(rgb_srgb[1] * 255, 0, 255)),
-                    int(np.clip(rgb_srgb[2] * 255, 0, 255)),
-                    int(np.clip(self.opacities[i].item() * 255, 0, 255)),
-                ]
-                flags = 0x00  # RGB mode
-                
-            else:  # "oklab" mode for dynamic assets
-                # Keep Oklab for runtime color interpolation
-                color_packed = [
-                    int(np.clip(oklab[0] * 255, 0, 255)),  # L
-                    int(np.clip((oklab[1] + 0.4) / 0.8 * 255, 0, 255)),  # a
-                    int(np.clip((oklab[2] + 0.4) / 0.8 * 255, 0, 255)),  # b
-                    int(np.clip(self.opacities[i].item() * 255, 0, 255)),
-                ]
-                flags = 0x01  # Oklab mode
-            
-            splats_data.append({
-                'position': self.positions[i].detach().cpu().numpy(),
-                'scale': self.scales[i].detach().cpu().numpy(),
-                'rotation': self.rotations[i].detach().cpu().numpy(),
-                'color_packed': color_packed,
-                'flags': flags,
-            })
+        # Vectorised export (numpy) — no per-splat loop
+        oklab = self.colors_oklab.detach().cpu().numpy()   # [N, 3]
+        opacities = self.opacities.detach().cpu().numpy()  # [N]
+
+        L_u8  = np.clip(oklab[:, 0] * 255, 0, 255).astype(np.uint8)
+        a_u8  = np.clip((oklab[:, 1] + 0.4) / 0.8 * 255, 0, 255).astype(np.uint8)
+        b_u8  = np.clip((oklab[:, 2] + 0.4) / 0.8 * 255, 0, 255).astype(np.uint8)
+        A_u8  = np.clip(opacities * 255, 0, 255).astype(np.uint8)
+
+        color_packed = (L_u8.astype(np.uint32) << 24
+                      | a_u8.astype(np.uint32) << 16
+                      | b_u8.astype(np.uint32) << 8
+                      | A_u8.astype(np.uint32))
+        flags = np.full(len(color_packed), 0x01, dtype=np.uint8)  # always Oklab
+
+        splats_data = [{
+            'position': self.positions[i].detach().cpu().numpy(),
+            'scale': self.scales[i].detach().cpu().numpy(),
+            'rotation': self.rotations[i].detach().cpu().numpy(),
+            'color_packed': int(color_packed[i]),
+            'flags': int(flags[i]),
+        } for i in range(len(self.positions))]
         
         save_splats_binary(splats_data, output_path)
 ```
@@ -762,7 +747,7 @@ def query_similar_assets(query_text: str, query_shape: Optional[np.ndarray] = No
 | **Stage 1: Math JIT** | 50ms (graph build) | - | 100MB (graph) | Bytecode (5KB) |
 | **Stage 2: Volume Bake** | - | 200ms @ 128³ | 8MB | 4MB (f16, compressed) |
 | **Stage 2: Shell Gen** | 500ms (DC + decimate) | - | 20MB | 50KB (500 tris) |
-| **Stage 3: Splat Train** | - | 30-60s @ 100k splats | 500MB | 2.4MB (quantized) |
+| **Stage 3: Splat Train** | - | 30-60s @ 10k splats | 500MB | 440KB (quantized f16) |
 | **Stage 4: Indexing** | 100ms (embedding) | - | 50MB (models) | 4KB (vectors) |
 | **Total** | ~700ms | ~60s | 678MB peak | **6.5MB binary** |
 
@@ -772,12 +757,12 @@ def query_similar_assets(query_text: str, query_shape: Optional[np.ndarray] = No
 
 ## **Implementation Checklist**
 
-- [ ] Implement recursive SDF tree compiler with IQ smooth union
-- [ ] Add CSE (Common Subexpression Elimination) optimization
-- [ ] Create volume baking with zstd compression
-- [ ] Implement Dual Contouring with QEF solver
-- [ ] Build splat training loop with Oklab colors
-- [ ] Add adaptive densification/pruning
+- [x] Implement recursive SDF tree compiler with IQ smooth union
+- [x] Add CSE (Common Subexpression Elimination) optimization
+- [x] Create volume baking with zstd compression
+- [x] Implement Dual Contouring with QEF solver
+- [x] Build splat training loop with Oklab colors
+- [x] Add adaptive densification/pruning
 - [ ] Integrate Sentence Transformer for text vectors
 - [ ] Train/deploy PointNet for shape vectors
 - [ ] Set up MongoDB vector search index
@@ -788,6 +773,32 @@ def query_similar_assets(query_text: str, query_shape: Optional[np.ndarray] = No
 
 ---
 
-**Version:** 1.1  
-**Last Updated:** January 26, 2026  
+**Version:** 1.2  
+**Last Updated:** 2026-02-07  
 **Related:** [System Overview](../architecture/overview.md) | [Engine API](../architecture/engine-api.md) | [Data Specifications](../data/data-specifications.md)
+
+---
+
+## **Appendix: PBR Attribute Flow**
+
+### Material Attributes Through the Pipeline
+
+The compiler propagates a **5-channel attribute tensor** `[L, a, b, metallic, roughness]` through the SDF graph:
+
+1. **Math JIT:** `_resolve_material()` looks up the material in `MaterialLibrarian`, converts sRGB directly to Oklab (single `srgb_to_oklab()` call), and returns `(oklab_color, metallic, roughness)`. The `_prepare_dna()` step merges AI-assigned `dna["materials"]` into individual node dicts before graph construction.
+2. **PrimitiveNode:** Stores 5-channel `attrs` tensor `[L, a, b, metallic, roughness]`. CSG nodes blend/select these during boolean operations.
+3. **ProceduralTextureNode:** Optionally wraps child SDFs to modulate attributes using noise functions (Perlin, Voronoi, FBM). DNA field: `"procedural_texture": {"type": "wood_grain", "scale": 10.0, "intensity": 0.3}` (legacy `"texture_pattern"` also accepted). Also supports `metallic_variation` to modulate the metallic channel.
+4. **SplatTrainer:** Queries the SDF graph for 5-channel attributes at each splat position. `metallic` and `roughness` are optimized as learnable parameters alongside position/color.
+5. **Binary Writer:** Packs `metallic` and `roughness` as `u8` (0-255) into the Splat struct. Colour is always Oklab8+A (flags = 0x01). **48-byte splat size preserved.**
+6. **Renderer (WGSL):** Splat shader dequantises Oklab u8 -> Oklab float -> linear RGB (matrix multiply), then applies Cook-Torrance BRDF with GGX/Schlick-GGX/Fresnel-Schlick. Single decode path, no branching.
+
+### Procedural Texture Patterns
+
+Available noise-based patterns for DNA `procedural_texture` field (legacy `texture_pattern` also accepted):
+
+| Pattern | Effect | Key Params |
+|---------|--------|------------|
+| `perlin` | Generic 3D Perlin noise | `scale`, `intensity` |
+| `wood_grain` | Concentric ring pattern | `scale`, `intensity`, `ring_freq` |
+| `marble` | Veined stone with turbulence | `scale`, `intensity`, `vein_freq` |
+| `rust` | Cellular corrosion patches | `scale`, `intensity`, `cell_size` |

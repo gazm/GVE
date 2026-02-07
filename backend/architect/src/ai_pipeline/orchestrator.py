@@ -4,6 +4,8 @@ AI Pipeline Orchestrator - Multi-track generation flow coordination.
 
 Entry point for asset generation. Routes requests to appropriate
 track (Matter, Landscape, Audio) and manages generation state.
+
+Supports stage preview callbacks for real-time viewport updates.
 """
 
 from __future__ import annotations
@@ -12,13 +14,16 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 from bson import ObjectId
 from pydantic import BaseModel
 
 from .agents import AgentContext
 from .rag import inject_rag_context
+
+# Type for stage completion callback: (stage_name, preview_binary) -> None
+StageCompleteCallback = Callable[[str, bytes], Awaitable[None]]
 
 
 class GenerationTrack(str, Enum):
@@ -73,6 +78,7 @@ class GenerationState:
     retry_count: int = 0
     max_retries: int = 3
     style_token: str | None = None
+    concept_image_base64: str | None = None  # Concept image for vision-guided generation
     
     def to_agent_context(self) -> AgentContext:
         """Convert state to AgentContext for agent execution."""
@@ -112,22 +118,79 @@ def classify_track(prompt: str) -> GenerationTrack:
 
 async def generate_asset(request: GenerateRequest) -> GenerateResult:
     """
-    Main entry point for asset generation.
+    Main entry point for asset generation (without concept image).
     
     Routes to appropriate track and orchestrates multi-stage pipeline.
     Returns DNA JSON - does NOT compile (per module anti-patterns).
+    
+    For concept-guided generation, use generate_asset_with_concept() instead.
+    """
+    return await _generate_asset_internal(request, concept_image_base64=None)
+
+
+async def generate_asset_with_concept(
+    request: GenerateRequest,
+    concept_image_base64: str,
+    on_stage_complete: StageCompleteCallback | None = None,
+) -> GenerateResult:
+    """
+    Generate asset with concept image as visual reference.
+    
+    This is the preferred entry point when using the two-phase workflow.
+    The concept image guides all generation stages for better quality.
+    
+    Args:
+        request: Generation request with prompt and options
+        concept_image_base64: Base64 encoded concept image
+        on_stage_complete: Optional callback for stage preview updates.
+            Called after each stage with (stage_name, preview_binary_bytes).
+    """
+    return await _generate_asset_internal(
+        request,
+        concept_image_base64=concept_image_base64,
+        on_stage_complete=on_stage_complete,
+    )
+
+
+async def _generate_asset_internal(
+    request: GenerateRequest,
+    concept_image_base64: str | None = None,
+    on_stage_complete: StageCompleteCallback | None = None,
+) -> GenerateResult:
+    """
+    Internal asset generation implementation.
+    
+    Routes to appropriate track and orchestrates multi-stage pipeline.
+    Returns DNA JSON - does NOT compile (per module anti-patterns).
+    
+    Args:
+        request: Generation request
+        concept_image_base64: Optional concept image for vision guidance
+        on_stage_complete: Optional callback for stage preview updates
     """
     start_time = time.time()
     
     # 1. Route to track
+    # Auto-expand short prompts to avoid ambiguity (e.g. "m4a4" -> "m4a4, 3D game asset")
+    expanded_prompt = _expand_short_prompt(request.prompt)
+    if expanded_prompt != request.prompt:
+        print(f"✨ Expanded prompt: '{request.prompt}' -> '{expanded_prompt}'")
+        # Update request prompt for downstream usage
+        request.prompt = expanded_prompt
+
     track = request.track_override or classify_track(request.prompt)
     print(f"🎯 Routing to track: {track.value}")
+    if concept_image_base64:
+        print(f"📷 Using concept image as visual reference")
+    if on_stage_complete:
+        print(f"📺 Stage preview callback enabled")
     
     # 2. Initialize state
     state = GenerationState(
         user_prompt=request.prompt,
         selected_track=track,
         style_token=request.style_reference,
+        concept_image_base64=concept_image_base64,
     )
     
     # 3. Inject RAG context
@@ -136,7 +199,7 @@ async def generate_asset(request: GenerateRequest) -> GenerateResult:
     # 4. Execute track-specific pipeline
     if track == GenerationTrack.MATTER:
         from .track_matter import execute_matter_pipeline
-        dna = await execute_matter_pipeline(state)
+        dna = await execute_matter_pipeline(state, on_stage_complete=on_stage_complete)
     elif track == GenerationTrack.LANDSCAPE:
         # TODO: Implement landscape pipeline
         raise NotImplementedError("Landscape track not yet implemented")
@@ -166,6 +229,11 @@ async def generate_asset(request: GenerateRequest) -> GenerateResult:
         "dna": dna,
         "is_draft": True,  # Mark as draft until explicitly saved
     }
+    
+    # Include concept image if available
+    if concept_image_base64:
+        asset_doc["concept_image"] = concept_image_base64
+        asset_doc["concept_prompt"] = request.prompt
     
     asset_id = await save_asset_doc(asset_doc)
     
@@ -210,6 +278,25 @@ def _extract_tags(prompt: str) -> list[str]:
     return tags[:10]  # Limit to 10 tags
 
 
+def _expand_short_prompt(prompt: str) -> str:
+    """
+    Expand very short prompts to ensure they are interpreted as 3D assets.
+    
+    Example: "m4a4" -> "m4a4, 3D prop asset"
+    """
+    # Split by spaces to count words
+    words = prompt.strip().split()
+    
+    # If 3 words or less, and doesn't already contain "asset", "prop", "3d"
+    if len(words) <= 3:
+        prompt_lower = prompt.lower()
+        keywords = {"asset", "prop", "object", "item", "3d", "structure", "weapon", "tool"}
+        if not any(k in prompt_lower for k in keywords):
+            return f"{prompt}, 3D prop asset"
+            
+    return prompt
+
+
 def validate_dna_structure(dna: dict[str, Any]) -> tuple[bool, str]:
     """
     Validate DNA structure before saving.
@@ -217,8 +304,11 @@ def validate_dna_structure(dna: dict[str, Any]) -> tuple[bool, str]:
     Returns (is_valid, error_message).
     If invalid, error_message contains specific details about what's wrong.
     """
-    # Valid primitive shapes
-    VALID_SHAPES = {"box", "sphere", "cylinder", "capsule", "torus", "cone", "plane"}
+    # Valid primitive shapes (includes fractals and revolution)
+    VALID_SHAPES = {
+        "box", "sphere", "cylinder", "capsule", "torus", "cone", "plane",
+        "wedge", "revolution", "mandelbulb", "menger", "julia",
+    }
     
     # Check root_node exists
     if "root_node" not in dna:

@@ -60,9 +60,11 @@ pub struct Splat {
     pub position: [f32; 3],      // 12 bytes
     pub scale: [f32; 3],         // 12 bytes (ellipsoid radii)
     pub rotation: [f32; 4],      // 16 bytes (quaternion)
-    pub color_packed: u32,       // 4 bytes (RGBA8 or Oklab8)
-    pub flags: u8,               // 1 byte (bit 0: color_mode)
-    pub _padding: [u8; 3],       // 3 bytes (alignment)
+    pub color_packed: u32,       // 4 bytes Oklab8+A: [L, a, b, alpha]
+    pub metallic: u8,            // 1 byte  (0-255 -> 0.0-1.0)
+    pub roughness: u8,           // 1 byte  (0-255 -> 0.0-1.0)
+    pub flags: u8,               // 1 byte  (0x01 = Oklab, reserved)
+    pub _padding: u8,            // 1 byte  (alignment)
 }
 
 // ============================================================================
@@ -73,23 +75,30 @@ pub struct Splat {
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PrimitiveOp {
-    Sphere = 0x01,      // params: [cx, cy, cz, radius, 0, 0, 0, 0]
-    Box = 0x02,         // params: [cx, cy, cz, sx, sy, sz, 0, 0]
-    Cylinder = 0x03,    // params: [cx, cy, cz, radius, height, 0, 0, 0]
-    Capsule = 0x04,     // params: [cx, cy, cz, radius, height, 0, 0, 0]
-    Torus = 0x05,       // params: [cx, cy, cz, major_r, minor_r, 0, 0, 0]
-    Cone = 0x06,        // params: [cx, cy, cz, angle, height, 0, 0, 0]
-    Plane = 0x07,       // params: [nx, ny, nz, dist, 0, 0, 0, 0]
+    Sphere = 0x01,       // params: [cx, cy, cz, radius, 0, 0, 0, 0]
+    Box = 0x02,          // params: [cx, cy, cz, sx, sy, sz, 0, 0]
+    Cylinder = 0x03,     // params: [cx, cy, cz, radius, height, 0, 0, 0]
+    Capsule = 0x04,      // params: [cx, cy, cz, radius, height, 0, 0, 0]
+    Torus = 0x05,        // params: [cx, cy, cz, major_r, minor_r, 0, 0, 0]
+    Cone = 0x06,         // params: [cx, cy, cz, angle, height, 0, 0, 0]
+    Plane = 0x07,        // params: [nx, ny, nz, dist, 0, 0, 0, 0]
+    Revolution = 0x08,   // params: [cx, cy, cz, offset, profile_w, profile_h, axis_flag, 0]
+    Mandelbulb = 0x09,   // params: [cx, cy, cz, scale, power, iterations, 0, 0]
+    MengerSponge = 0x0A, // params: [cx, cy, cz, scale, iterations, 0, 0, 0]
+    JuliaSet = 0x0B,     // params: [cx, cy, cz, scale, c0, c1, c2, c3]
+    Wedge = 0x0C,        // params: [cx, cy, cz, sx, sy, sz, taper_axis, taper_dir]
 }
 
 /// SDF Binary operations
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
-    Union = 0x10,           // min(a, b)
-    Subtract = 0x11,        // max(a, -b)
-    Intersect = 0x12,       // max(a, b)
-    SmoothUnion = 0x13,     // IQ polynomial smooth min
+    Union = 0x10,            // min(a, b)
+    Subtract = 0x11,         // max(a, -b)
+    Intersect = 0x12,        // max(a, b)
+    SmoothUnion = 0x13,      // IQ polynomial smooth min
+    SmoothSubtract = 0x14,   // IQ smooth max(a, -b) with fillet
+    SmoothIntersect = 0x15,  // IQ smooth max(a, b) with fillet
 }
 
 /// SDF Modifier operations
@@ -101,6 +110,7 @@ pub enum ModifierOp {
     Mirror = 0x22,      // params: [axis, 0, 0, 0]
     Round = 0x23,       // params: [radius, 0, 0, 0]
     Elongate = 0x24,    // params: [axis, length, 0, 0]
+    Voronoi = 0x25,     // params: [cell_size, wall_thickness, mode, 0]
 }
 
 /// SDF Instruction types

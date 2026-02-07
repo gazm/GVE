@@ -17,11 +17,12 @@ async def test_api_flow():
     
     # Use AsyncClient with lifespan support
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        # 1. Health Check
-        print("Testing Root Health Check...")
+        # 1. Health Check - Root now serves Forge UI HTML, not JSON
+        print("Testing Root (Forge UI)...")
         response = await client.get("/")
         assert response.status_code == 200
-        print(f"SUCCESS: {response.json()}")
+        assert "text/html" in response.headers.get("content-type", "")
+        print(f"✅ SUCCESS: Root serves HTML (Forge UI)")
 
         # 2. Asset CRUD
         asset_id = str(ObjectId())
@@ -77,19 +78,9 @@ async def test_api_flow():
 if __name__ == "__main__":
     try:
         asyncio.run(test_api_flow())
-        print("\nALL API TESTS PASSED!")
+        print("\n✅ ALL API TESTS PASSED!")
     except Exception as e:
-        print(f"\nAPI TEST FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-if __name__ == "__main__":
-    try:
-        test_api_flow()
-        print("\nALL API TESTS PASSED!")
-    except Exception as e:
-        print(f"\nAPI TEST FAILED: {e}")
+        print(f"\n❌ API TEST FAILED: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
