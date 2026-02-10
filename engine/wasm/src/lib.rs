@@ -12,18 +12,24 @@ thread_local! {
     static ENGINE: Lazy<RefCell<Option<WasmEngine>>> = Lazy::new(|| RefCell::new(None));
 }
 
-/// Borrow the engine mutably and run a closure. Returns None if engine is not initialized.
+/// Borrow the engine mutably and run a closure. Returns None if engine is not initialized or if already borrowed (re-entrant call).
 fn with_engine_mut<R>(f: impl FnOnce(&mut WasmEngine) -> R) -> Option<R> {
     ENGINE.with(|cell| {
-        let mut borrow = cell.borrow_mut();
+        let mut borrow = match cell.try_borrow_mut() {
+            Ok(b) => b,
+            Err(_) => return None, // Re-entrant: skip this call (e.g. render_frame during load_geometry)
+        };
         borrow.as_mut().map(f)
     })
 }
 
-/// Borrow the engine immutably and run a closure. Returns None if engine is not initialized.
+/// Borrow the engine immutably and run a closure. Returns None if engine is not initialized or if already borrowed.
 fn with_engine<R>(f: impl FnOnce(&WasmEngine) -> R) -> Option<R> {
     ENGINE.with(|cell| {
-        let borrow = cell.borrow();
+        let borrow = match cell.try_borrow() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
         borrow.as_ref().map(f)
     })
 }
@@ -31,6 +37,7 @@ fn with_engine<R>(f: impl FnOnce(&WasmEngine) -> R) -> Option<R> {
 #[wasm_bindgen]
 pub async fn init_engine(canvas_id: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    let _ = console_log::init_with_level(log::Level::Warn);
     let window = web_sys::window().expect("no global `window` exists");
     let document = window.document().expect("should have a document on window");
     let canvas = document
@@ -93,7 +100,7 @@ pub fn clear_sdf() {
     });
 }
 
-/// Set view mode: 0=Mesh, 1=SDF (uses Volume raymarching), 2=Splat
+/// Set view mode: 0=Mesh, 1=SDF (uses Volume raymarching), 2=Splat, 3=Overlay (alias)
 #[wasm_bindgen]
 pub fn set_view_mode(mode: u32, asset_id: u64) {
     with_engine_mut(|engine| {
@@ -102,6 +109,7 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
                  engine.renderer.set_active_sdf(None);
                  engine.renderer.set_active_splat(None);
                  engine.renderer.set_active_volume(None);
+                 engine.renderer.set_viewmode("sdf"); // Default SDF mode for mesh fallback
                  #[cfg(debug_assertions)] {
                      if engine.renderer.has_mesh(asset_id) {
                          web_sys::console::log_1(&format!("👁️ Mesh mode for asset {}", asset_id).into());
@@ -117,6 +125,8 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
                  } else if engine.renderer.has_sdf(asset_id) {
                      engine.renderer.set_active_sdf(Some(asset_id));
                  }
+                 engine.renderer.set_active_splat(None);
+                 engine.renderer.set_viewmode("sdf"); // SDF-only mode
                  #[cfg(debug_assertions)] {
                      if has_volume {
                          web_sys::console::log_1(&format!("👁️ SDF mode (volume) for asset {}", asset_id).into());
@@ -130,6 +140,9 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
             2 => { // Splat
                  if engine.renderer.has_splat(asset_id) {
                      engine.renderer.set_active_splat(Some(asset_id));
+                     engine.renderer.set_active_sdf(None);
+                     engine.renderer.set_active_volume(None);
+                     engine.renderer.set_viewmode("splat");
                  }
                  #[cfg(debug_assertions)] {
                      if engine.renderer.has_splat(asset_id) {
@@ -138,6 +151,42 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
                          web_sys::console::warn_1(&format!("⚠️ Asset {} has no Splat data!", asset_id).into());
                      }
                  }
+            },
+            3 => { // Overlay (SDF/Volume + Splats)
+                 let has_sdf = engine.renderer.has_sdf(asset_id);
+                 let has_volume = engine.renderer.has_volume(asset_id);
+                 
+                 if has_volume {
+                     engine.renderer.set_active_volume(Some(asset_id));
+                     engine.renderer.set_active_sdf(None);
+                 } else if has_sdf {
+                     engine.renderer.set_active_sdf(Some(asset_id));
+                     engine.renderer.set_active_volume(None);
+                 }
+                 if engine.renderer.has_splat(asset_id) {
+                     engine.renderer.set_active_splat(Some(asset_id));
+                 }
+                 engine.renderer.set_viewmode("sdf_overlay");
+                 #[cfg(debug_assertions)]
+                 web_sys::console::log_1(&"👁️ Overlay mode (textured alias): SDF + Splats".into());
+            },
+            4 => { // SDF Overlay (existing behavior: SDF + splats on top)
+                 let has_sdf = engine.renderer.has_sdf(asset_id);
+                 let has_volume = engine.renderer.has_volume(asset_id);
+                 
+                 if has_volume {
+                     engine.renderer.set_active_volume(Some(asset_id));
+                     engine.renderer.set_active_sdf(None);
+                 } else if has_sdf {
+                     engine.renderer.set_active_sdf(Some(asset_id));
+                     engine.renderer.set_active_volume(None);
+                 }
+                 if engine.renderer.has_splat(asset_id) {
+                     engine.renderer.set_active_splat(Some(asset_id));
+                 }
+                 engine.renderer.set_viewmode("sdf_overlay");
+                 #[cfg(debug_assertions)]
+                 web_sys::console::log_1(&"👁️ SDF Overlay mode: SDF + Splats rendered on top".into());
             },
             _ => {}
         }
@@ -188,4 +237,21 @@ pub fn toggle_axes() {
 #[wasm_bindgen]
 pub fn get_scene_snapshot() -> Vec<u8> {
     with_engine(|engine| engine.renderer.get_scene_snapshot()).unwrap_or_default()
+}
+
+/// Get debug info as JSON string
+#[wasm_bindgen]
+pub fn get_debug_info() -> String {
+    with_engine(|engine| {
+        let state = engine.renderer.get_debug_state();
+        format!(
+            r#"{{"view_mode": "{}", "active_assets": {{ "sdf": {}, "splat": {}, "volume": {} }}, "camera": {{ "pos": [{:.2}, {:.2}, {:.2}], "yaw": {:.2}, "pitch": {:.2} }} }}"#,
+            state.view_mode,
+            state.active_sdf.map(|id| id.to_string()).unwrap_or("null".to_string()),
+            state.active_splat.map(|id| id.to_string()).unwrap_or("null".to_string()),
+            state.active_volume.map(|id| id.to_string()).unwrap_or("null".to_string()),
+            state.camera_pos[0], state.camera_pos[1], state.camera_pos[2],
+            state.camera_yaw, state.camera_pitch
+        )
+    }).unwrap_or("{}".to_string())
 }

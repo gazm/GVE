@@ -7,14 +7,14 @@ pub const GVE_MAGIC: &[u8; 4] = b"GVE1";
 ///
 /// Layout (packed, little-endian):
 /// - magic: [u8; 4]           @ 0   "GVE1"
-/// - version: u32             @ 4   Format version (0x00020000 for v2.0)
+/// - version: u32             @ 4   Format version (0x00022000 for v2.2)
 /// - flags: u32               @ 8   Bit flags
 /// - sdf_bytecode_offset: u64 @ 12  Offset to SDF bytecode section
 /// - volume_data_offset: u64  @ 20  Offset to volume data (VDB)
 /// - splat_data_offset: u64   @ 28  Offset to gaussian splat data
 /// - shell_mesh_offset: u64   @ 36  Offset to shell mesh
 /// - audio_patch_offset: u64  @ 44  Offset to audio patch
-/// - metadata_offset: u64     @ 52  Offset to JSON metadata
+/// - triplanar_offset: u64    @ 52  Offset to triplanar textures (v2.2+, was metadata_offset)
 /// - sdf_bytecode_size: u32   @ 60  Size of SDF bytecode in bytes
 /// - volume_size: u32         @ 64  Size of volume data in bytes
 /// - splat_count: u32         @ 68  Number of splats
@@ -25,16 +25,16 @@ pub const GVE_MAGIC: &[u8; 4] = b"GVE1";
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct GVEBinaryHeader {
     pub magic: [u8; 4],              // "GVE1"
-    pub version: u32,                // Format version (0x00021000 for v2.1)
+    pub version: u32,                // Format version (0x00022000 for v2.2)
     pub flags: u32,                  // Bit flags (compression, LOD levels, etc.)
     pub sdf_bytecode_offset: u64,
     pub volume_data_offset: u64,     // (Was sdf_texture_offset) VDB/NanoVDB data
     pub splat_data_offset: u64,
     pub shell_mesh_offset: u64,
     pub audio_patch_offset: u64,
-    pub metadata_offset: u64,
+    pub triplanar_offset: u64,       // Triplanar textures (v2.2+, was metadata_offset)
     pub sdf_bytecode_size: u32,
-    pub volume_size: u32,            // (Was sdf_texture_size) Size od VDB data
+    pub volume_size: u32,            // (Was sdf_texture_size) Size of VDB data
     pub splat_count: u32,
     pub vertex_count: u32,
     pub _padding: [u8; 8],

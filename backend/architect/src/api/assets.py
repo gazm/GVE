@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 from pathlib import Path
@@ -12,6 +13,7 @@ from generated.types import AssetMetadata
 from .templates import templates
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi import Request, Body, BackgroundTasks, Form
+from src.compiler import enqueue_compile, CompilePriority
 
 router = APIRouter()
 
@@ -34,23 +36,31 @@ async def find_assets(q: str = Query(..., min_length=1), limit: int = Query(50, 
 # IMPORTANT: More specific routes must come BEFORE less specific ones
 @router.get("/{asset_id}/binary")
 async def get_asset_binary(asset_id: str):
-    """Serve the compiled binary file for an asset."""
-    # First try the compiled directory (where compiler outputs)
+    """Serve the compiled binary file for an asset.
+    
+    Cache-Control: no-store ensures browser always fetches fresh after recompile.
+    """
     binary_path = resolve_cache_path(asset_id)
-    
-    if not binary_path.exists():
-        # Fallback: try loading asset and resolving by metadata
-        asset = await load_asset(asset_id)
-        if asset:
-            binary_path = resolve_cache_path(asset)
-    
+
     if not binary_path.exists():
         raise HTTPException(status_code=404, detail="Binary file not found. Asset may not be compiled yet.")
+
+    # Use Response wrapper to add cache-control headers
+    from starlette.responses import Response
+    import os
     
-    return FileResponse(
-        path=str(binary_path),
+    with open(binary_path, "rb") as f:
+        content = f.read()
+    
+    return Response(
+        content=content,
         media_type="application/octet-stream",
-        filename=binary_path.name
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Content-Disposition": f"attachment; filename={binary_path.name}",
+        }
     )
 
 @router.get("/{asset_id}", response_model=AssetMetadata)
@@ -248,87 +258,120 @@ async def search_assets_partial(request: Request, q: str = Query("", min_length=
 async def get_browser_partial(request: Request):
     return templates.TemplateResponse("asset_browser.html", {"request": request})
 
+def _get_texture_mode_from_doc(doc: dict | None) -> str:
+    """Read texture_mode from asset doc settings; default 'procedural_triplanar'. Backward compat: splat_mode."""
+    if not doc:
+        return "procedural_triplanar"
+    s = doc.get("settings", {})
+    return s.get("texture_mode") or s.get("splat_mode", "procedural_triplanar")
+
+
 @router.get("/partials/editor/{card_id}", response_class=HTMLResponse)
 async def get_editor_partial(card_id: str, request: Request):
     asset = await load_asset(card_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    
+    doc = await load_asset_doc(card_id)
+    texture_mode = _get_texture_mode_from_doc(doc)
     card_name = asset.name
-    property_groups = [
+    # Use shared logic to avoid duplication
+    property_groups = _property_groups_from_doc(card_id, doc)
+    
+    # Pass JSON-serialized DNA for safely embedding in JS
+    import json
+    dna_json = json.dumps(doc.get("dna", {}))
+
+    return templates.TemplateResponse("property_editor.html", {
+        "request": request,
+        "card_id": card_id,
+        "card_name": card_name,
+        "property_groups": property_groups,
+        "has_dna": "dna" in (doc or {}),
+        "dna_json": dna_json,
+    })
+
+from .websocket import broadcast_event
+
+def _property_groups_from_doc(card_id: str, doc: dict) -> list:
+    """Build property_groups from raw doc so we never rely on save_asset (which would wipe DNA)."""
+    settings = doc.get("settings", {})
+    category = doc.get("category", "Prop")
+    category_display = category.value if hasattr(category, "value") else str(category)
+    return [
         {
             "name": "General Settings",
             "properties": [
-                {"name": "name", "label": "Asset Name", "type": "text", "value": asset.name},
-                {"name": "category", "label": "Category", "type": "text", "value": asset.category.value, "readonly": True},
+                {"name": "name", "label": "Asset Name", "type": "text", "value": doc.get("name", card_id)},
+                {"name": "category", "label": "Category", "type": "text", "value": category_display, "readonly": True},
             ]
         },
         {
             "name": "Optimization",
             "properties": [
-                {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": asset.settings.lod_count},
-                {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": asset.settings.resolution},
+                {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": settings.get("lod_count", 3)},
+                {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": settings.get("resolution", 128)},
+                {
+                    "name": "texture_mode",
+                    "label": "Texture mode",
+                    "type": "select",
+                    "value": _get_texture_mode_from_doc(doc),
+                    "options": [
+                        {"value": "dense", "label": "Dense"},
+                        {"value": "swatch", "label": "Swatch"},
+                        {"value": "procedural_triplanar", "label": "Procedural (triplanar)"},
+                    ],
+                },
+                {
+                    "name": "triplanar_bake_mode",
+                    "label": "Bake Mode (Triplanar)",
+                    "type": "select",
+                    "value": settings.get("triplanar_bake_mode", "gaussian"),
+                    "options": [
+                        {"value": "gaussian", "label": "Gaussian (Smooth)"},
+                        {"value": "point", "label": "Point (Crisp/Voronoi)"},
+                    ],
+                },
             ]
         }
     ]
-    
-    return templates.TemplateResponse("property_editor.html", {
-        "request": request,
-        "card_id": card_id,
-        "card_name": card_name,
-        "property_groups": property_groups
-    })
 
-from .websocket import broadcast_event
 
 @router.post("/partials/property/{card_id}", response_class=HTMLResponse)
 async def update_property(card_id: str, request: Request):
     form_data = await request.form()
     print(f"🔧 Updating property for {card_id}: {form_data}")
+    doc = await load_asset_doc(card_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    # Use update_asset_field only — never save_asset here, or we overwrite the doc and wipe DNA
+    updates = {}
+    if "name" in form_data:
+        updates["name"] = form_data["name"]
+    if "lod_count" in form_data:
+        updates["settings.lod_count"] = int(form_data["lod_count"])
+    if "resolution" in form_data:
+        updates["settings.resolution"] = int(form_data["resolution"])
+    if "texture_mode" in form_data and form_data["texture_mode"] in ("dense", "swatch", "procedural_triplanar"):
+        updates["settings.texture_mode"] = form_data["texture_mode"]
+    if "triplanar_bake_mode" in form_data and form_data["triplanar_bake_mode"] in ("gaussian", "point"):
+        updates["settings.triplanar_bake_mode"] = form_data["triplanar_bake_mode"]
+    if updates:
+        updates["updated_at"] = datetime.utcnow()
+        updates["version"] = doc.get("version", 0) + 1
+        await update_asset_field(card_id, updates)
+        await enqueue_compile(card_id)
+    await broadcast_event("compile:progress", {"asset_id": card_id, "progress": 15, "status": "Saving & Validating..."})
+    doc = await load_asset_doc(card_id)
+    import json
+    dna_json = json.dumps(doc.get("dna", {}))
     
-    asset = await load_asset(card_id)
-    if asset:
-        # Update name if provided
-        if "name" in form_data:
-            asset.name = form_data["name"]
-        
-        # Update settings if provided
-        if "lod_count" in form_data:
-            asset.settings.lod_count = int(form_data["lod_count"])
-        if "resolution" in form_data:
-            asset.settings.resolution = int(form_data["resolution"])
-        
-        # Save back to Librarian (this triggers background compilation)
-        await save_asset(asset)
-    
-    # Broadcast compilation progress event for UI feedback
-    await broadcast_event("compile:progress", {
-        "asset_id": card_id,
-        "progress": 15,
-        "status": "Saving & Validating..."
-    })
-    
-    # Render both partials directly via templates (avoids double-render through endpoint)
     editor_html = templates.get_template("property_editor.html").render({
         "request": request,
         "card_id": card_id,
-        "card_name": asset.name if asset else card_id,
-        "property_groups": [
-            {
-                "name": "General Settings",
-                "properties": [
-                    {"name": "name", "label": "Asset Name", "type": "text", "value": asset.name},
-                    {"name": "category", "label": "Category", "type": "text", "value": asset.category.value, "readonly": True},
-                ]
-            },
-            {
-                "name": "Optimization",
-                "properties": [
-                    {"name": "lod_count", "label": "LOD Count", "type": "number", "min": 0, "max": 5, "value": asset.settings.lod_count},
-                    {"name": "resolution", "label": "Resolution", "type": "number", "min": 16, "max": 256, "value": asset.settings.resolution},
-                ]
-            }
-        ] if asset else []
+        "card_name": doc.get("name", card_id),
+        "property_groups": _property_groups_from_doc(card_id, doc),
+        "has_dna": "dna" in doc,
+        "dna_json": dna_json,
     })
     progress_html = templates.get_template("progress_bar.html").render({
         "asset_id": card_id,
@@ -337,3 +380,47 @@ async def update_property(card_id: str, request: Request):
     })
     
     return HTMLResponse(content=editor_html + progress_html)
+
+@router.post("/partials/update_dna/{card_id}")
+async def update_asset_dna(card_id: str, dna: dict = Body(...)):
+    """
+    Update the DNA of an asset directly from the Tree Editor.
+    """
+    doc = await load_asset_doc(card_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    print(f"🧬 Updating DNA for {card_id}, keys: {list(dna.keys())}")
+    
+    # Update DNA field
+    # TODO: Validate DNA against schema here if possible
+    await update_asset_field(card_id, {"dna": dna})
+    
+    # Trigger Compile
+    # Future work: Return 'hotload' patch if supported
+    job_id = await enqueue_compile(card_id, priority=CompilePriority.HIGH, force_recompile=True)
+    
+    return {"status": "ok", "job_id": job_id}
+
+@router.post("/partials/recompile/{asset_id}", response_class=HTMLResponse)
+async def recompile_asset(asset_id: str, request: Request):
+    """
+    Trigger a forced recompilation of the asset.
+    Returns HTML snippet for the status indicator. If asset has no DNA, returns
+    an error message in the same element instead of enqueueing.
+    """
+    doc = await load_asset_doc(asset_id)
+    if not doc or "dna" not in doc:
+        return HTMLResponse(
+            content=f'<div id="status-{asset_id}" class="save-status error">No DNA — generate or import first</div>'
+        )
+    # Trigger compile with High priority and force_recompile=True
+    job_id = await enqueue_compile(
+        asset_id,
+        priority=CompilePriority.HIGH,
+        force_recompile=True
+    )
+    await broadcast_event("compile:started", {"asset_id": asset_id, "job_id": job_id})
+    return HTMLResponse(
+        content=f'<div id="status-{asset_id}" class="save-status">Recompiling... (Job: {job_id[:8]})</div>'
+    )

@@ -15,37 +15,22 @@ CACHE_ROOT = Path(os.getenv("GVE_CACHE_ROOT", "./cache"))
 def resolve_cache_path(asset: Union[AssetMetadata, dict, str]) -> Path:
     """
     Calculate cache file path from metadata, raw document, or asset ID.
-    Format: /cache/{category}/{name}_{short_id}.gve_bin
+
+    All branches resolve to the same canonical path keyed by full asset ID:
+    ``cache/compiled/{asset_id}.gve_bin``
+
+    This ensures the compiler write path and the API read path always match,
+    regardless of whether the caller passes a string ID, a dict, or an
+    AssetMetadata object.
     """
-    # Handle string asset ID
     if isinstance(asset, str):
-        return CACHE_ROOT / "compiled" / f"{asset}.gve_bin"
-    
-    # Handle raw document dict
-    if isinstance(asset, dict):
-        asset_id = asset.get("id") or asset.get("_id", "unknown")
-        name = asset.get("name", "asset")
-        category = asset.get("category", "prop")
-        if isinstance(category, str):
-            category = category.lower()
-        else:
-            category = "prop"
-        
-        short_id = str(asset_id)[-6:]
-        safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '_', '-')).strip().replace(' ', '_').lower()
-        filename = f"{safe_name}_{short_id}.gve_bin"
-        
-        return CACHE_ROOT / category / filename
-    
-    # Handle AssetMetadata object
-    short_id = str(asset.id)[-6:]
-    
-    # Sanitize name
-    safe_name = "".join(c for c in asset.name if c.isalnum() or c in (' ', '_', '-')).strip().replace(' ', '_').lower()
-    
-    filename = f"{safe_name}_{short_id}.gve_bin"
-    
-    return CACHE_ROOT / asset.category.value.lower() / filename
+        asset_id = asset
+    elif isinstance(asset, dict):
+        asset_id = str(asset.get("id") or asset.get("_id", "unknown"))
+    else:
+        asset_id = str(asset.id)
+
+    return CACHE_ROOT / "compiled" / f"{asset_id}.gve_bin"
 
 def check_cache_validity(asset: AssetMetadata) -> CacheStatus:
     """

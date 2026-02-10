@@ -261,3 +261,105 @@ class ProceduralTextureNode(nn.Module):
         new_attrs[:, 0] = torch.clamp(new_attrs[:, 0], 0.0, 1.0)
 
         return dist, new_attrs
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3, device=self.target_color.device), 
+                    torch.tensor([1.]*3, device=self.target_color.device))
+        return self.child.compute_bounds()
+
+
+class TextureModifierNode(nn.Module):
+    """Applies edge wear, cavity grime, and rust to material attributes."""
+    def __init__(
+        self,
+        child: nn.Module,
+        edge_wear: float = 0.0,
+        cavity_grime: float = 0.0,
+        rust_amount: float = 0.0,
+        eps: float = 0.003,
+        rust_scale: float = 4.0,
+    ):
+        super().__init__()
+        self.child = child
+        self.edge_wear = float(edge_wear)
+        self.cavity_grime = float(cavity_grime)
+        self.rust_amount = float(rust_amount)
+        self.eps = float(eps)
+        self.rust_scale = float(rust_scale)
+        
+        rust_color = _PATTERN_COLORS.get("rust", torch.tensor([0.6, 0.2, 0.15], dtype=torch.float32))
+        self.register_buffer("rust_color", rust_color)
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        dist, attrs = self.child(x)
+        
+        # Texture modifiers are CPU-only to avoid GPU memory spikes
+        if x.is_cuda:
+            return dist, attrs
+        
+        if self.edge_wear <= 0.0 and self.cavity_grime <= 0.0 and self.rust_amount <= 0.0:
+            return dist, attrs
+        
+        new_attrs = attrs.clone()
+        
+        # Compute curvature proxy only when needed (edge/cavity); eps slightly larger for stability
+        edge_mask = None
+        cavity_mask = None
+        if self.edge_wear > 0.0 or self.cavity_grime > 0.0:
+            eps = self.eps
+            offsets = torch.tensor(
+                [
+                    [eps, 0.0, 0.0],
+                    [-eps, 0.0, 0.0],
+                    [0.0, eps, 0.0],
+                    [0.0, -eps, 0.0],
+                    [0.0, 0.0, eps],
+                    [0.0, 0.0, -eps],
+                ],
+                device=x.device,
+                dtype=x.dtype,
+            )
+            x_off = x.unsqueeze(1) + offsets.unsqueeze(0)
+            x_off = x_off.reshape(-1, 3)
+            dist_off, _ = self.child(x_off)
+            dist_off = dist_off.reshape(x.shape[0], 6)
+            
+            laplacian = (dist_off.sum(dim=1) - 6.0 * dist) / (eps * eps)
+            edge_mask = torch.clamp(laplacian * 0.5, 0.0, 1.0).pow(0.7)
+            cavity_mask = torch.clamp(-laplacian * 0.5, 0.0, 1.0).pow(0.7)
+        
+        # Edge wear: brighten and reduce roughness (stronger effect)
+        if self.edge_wear > 0.0 and edge_mask is not None:
+            mask = edge_mask * self.edge_wear
+            new_attrs[:, 0] = torch.clamp(new_attrs[:, 0] + 0.12 * mask, 0.0, 1.0)
+            new_attrs[:, 4] = torch.clamp(new_attrs[:, 4] - 0.25 * mask, 0.0, 1.0)
+        
+        # Cavity grime: darken and increase roughness (stronger effect)
+        if self.cavity_grime > 0.0 and cavity_mask is not None:
+            mask = cavity_mask * self.cavity_grime
+            new_attrs[:, 0] = torch.clamp(new_attrs[:, 0] - 0.14 * mask, 0.0, 1.0)
+            new_attrs[:, 4] = torch.clamp(new_attrs[:, 4] + 0.35 * mask, 0.0, 1.0)
+        
+        # Rust: tint, reduce metallic, add subtle lightness/roughness variation so patches aren't flat
+        if self.rust_amount > 0.0:
+            rust_mask = rust_patches(x, scale=self.rust_scale)
+            rust_mask = torch.clamp(rust_mask * self.rust_amount, 0.0, 1.0)
+            rust_color = self.rust_color.unsqueeze(0).expand(attrs.shape[0], 3)
+            new_attrs[:, :3] = torch.lerp(new_attrs[:, :3], rust_color, rust_mask.unsqueeze(1))
+            new_attrs[:, 3] = torch.clamp(new_attrs[:, 3] - 0.6 * rust_mask, 0.0, 1.0)
+            new_attrs[:, 4] = torch.clamp(new_attrs[:, 4] + 0.35 * rust_mask, 0.0, 1.0)
+            # Subtle per-patch variation (lightness and roughness) so rust isn't uniform
+            rust_noise = perlin_noise_3d(x * self.rust_scale * 1.5) * 0.5 + 0.5
+            var_light = (rust_noise - 0.5) * 0.08 * rust_mask
+            var_rough = (rust_noise - 0.5) * 0.12 * rust_mask
+            new_attrs[:, 0] = torch.clamp(new_attrs[:, 0] + var_light, 0.0, 1.0)
+            new_attrs[:, 4] = torch.clamp(new_attrs[:, 4] + var_rough, 0.0, 1.0)
+        
+        return dist, new_attrs
+    
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3, device=self.rust_color.device),
+                    torch.tensor([1.]*3, device=self.rust_color.device))
+        return self.child.compute_bounds()

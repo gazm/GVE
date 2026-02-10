@@ -43,6 +43,29 @@ The Compiler Pipeline operates within **Layer 2: The Architect** of the tri-laye
 
 ---
 
+## **Color Pipeline**
+
+Colors flow from source to binary with minimal conversion loss:
+
+1. **Source:** DNA materials, finishes, and `query_attributes` provide colors in sRGB (hex, list 0–1) or Oklab (from procedural nodes).
+2. **Resolve:** `_resolve_material` converts sRGB → Oklab via `srgb_to_oklab`. Procedural nodes output Oklab [L, a, b, metallic, roughness] directly.
+3. **Bake:** Triplanar baker blends in **Oklab** (perceptually uniform). `bake_triplanar_from_voxel_oklab` and `bake_triplanar_textures_oklab` accumulate L, a, b; single `oklab_to_srgb` at finalize.
+4. **Output:** sRGB uint8 RGBA (Rgba8UnormSrgb). Alpha = roughness.
+5. **Engine:** GPU decodes sRGB → linear for lighting; gamma at display.
+
+**Rule:** Blend in Oklab; convert to sRGB only when writing the binary.
+ 
+### Triplanar Bake Modes
+
+The baker supports multiple accumulation strategies for different artistic styles:
+
+1.  **Gaussian (Default):** Soft, weighted accumulation. Splats blend smoothly. Best for organic shapes or general use.
+2.  **Point (Voronoi):** Max-weight winner-takes-all. Each pixel takes the color of the single most influential splat. Creates a sharp, faceted, "crystal" or "retro" look.
+
+Controlled via `settings.triplanar_bake_mode` ("gaussian" | "point") or transient compile options.
+
+---
+
 ## **Stage 1: Math JIT (Tensor Core)**
 
 ### Problem Statement
@@ -381,7 +404,19 @@ def initialize_splats_poisson(
     return splats
 ```
 
+**Surface-only enforcement (batched + Poisson):**  
+All initialization paths project candidates onto the zero-isosurface and then
+filter to a **surface-only** band using an adaptive tolerance. The tolerance is
+derived from bounds size and/or local spacing (min radius / avg spacing), so it
+tracks asset scale and avoids unit mismatches. This keeps splats from drifting
+into the SDF interior even when bounds are large or units are non-metric.
+
 ### 3.2 Zero-Layer Training with Oklab Colors
+
+After optimization, splat positions are **re-projected to the surface** using
+the same adaptive tolerance, and any remaining off-surface splats are corrected
+with a tighter pass. This guarantees the exported splats remain on the SDF
+surface before packing.
 
 ```python
 import torch
@@ -788,9 +823,17 @@ The compiler propagates a **5-channel attribute tensor** `[L, a, b, metallic, ro
 1. **Math JIT:** `_resolve_material()` looks up the material in `MaterialLibrarian`, converts sRGB directly to Oklab (single `srgb_to_oklab()` call), and returns `(oklab_color, metallic, roughness)`. The `_prepare_dna()` step merges AI-assigned `dna["materials"]` into individual node dicts before graph construction.
 2. **PrimitiveNode:** Stores 5-channel `attrs` tensor `[L, a, b, metallic, roughness]`. CSG nodes blend/select these during boolean operations.
 3. **ProceduralTextureNode:** Optionally wraps child SDFs to modulate attributes using noise functions (Perlin, Voronoi, FBM). DNA field: `"procedural_texture": {"type": "wood_grain", "scale": 10.0, "intensity": 0.3}` (legacy `"texture_pattern"` also accepted). Also supports `metallic_variation` to modulate the metallic channel.
-4. **SplatTrainer:** Queries the SDF graph for 5-channel attributes at each splat position. `metallic` and `roughness` are optimized as learnable parameters alongside position/color.
-5. **Binary Writer:** Packs `metallic` and `roughness` as `u8` (0-255) into the Splat struct. Colour is always Oklab8+A (flags = 0x01). **48-byte splat size preserved.**
-6. **Renderer (WGSL):** Splat shader dequantises Oklab u8 -> Oklab float -> linear RGB (matrix multiply), then applies Cook-Torrance BRDF with GGX/Schlick-GGX/Fresnel-Schlick. Single decode path, no branching.
+4. **TextureModifierNode:** Applies per-node weathering from DNA `texture_modifiers` (edge wear, cavity grime, rust). This is a compile-time attribute adjustment only and adds no runtime cost.
+5. **SplatTrainer:** Queries the SDF graph for 5-channel attributes at each splat position. `metallic` and `roughness` are optimized as learnable parameters alongside position/color. If `splat_count` is not specified, a bounds-based heuristic chooses a higher default for small assets. Supports mini-batch training via `splat_batch_size`, `splat_overlap_interval`, and `splat_accum_steps`.
+5b. **Texture mode (asset setting):** The compiler reads `settings["texture_mode"]` (default `"procedural_triplanar"`); backward compat: `settings["splat_mode"]` if `texture_mode` is unset. Values:
+   - **`dense`**: Dense Gaussian splat training (many small splats over the surface).
+   - **`swatch`**: One or a few large splats per material node (from `dna["materials"]`), placed at node centroids projected to the surface; no dense training loop. Settings: `swatches_per_node` (default 1), `swatch_scale_factor` (default 0.4).
+   - **`procedural_triplanar`**: No splat training. Surface voxels are colored by **blending** per-node material base (from `dna["materials"]`: base_color, finish_id, roughness, metallic) with `query_attributes` (65% query, 35% material) when materials exist, so edge_wear, cavity_grime, rust and procedural_texture from the graph are baked. Colors and roughness are baked into triplanar textures (TRI1); alpha channel stores roughness (0–1) for GGX in the volume shader. The runtime volume pass samples triplanar at the SDF hit for base color and roughness. Settings: `triplanar_resolution` (default 512), `triplanar_sample_count` (default 40000).
+   **Where to set:** On the asset's `settings` (e.g. in Forge UI property editor, "Texture mode" dropdown).
+6. **Concept image recolor (optional):** When the asset document contains `concept_image` (base64), after splat export a recolor pass projects each splat position to 2D (orthographic front view), samples the concept image with bilinear interpolation, converts to Oklab, and blends with the procedural color. Settings: `use_concept_texture` (default true), `concept_texture_blend` (default 0.7). This lets the compiled asset match the reference image (e.g. black pistol concept → black splats) without relying only on procedural materials.
+7. **Binary Writer:** Packs `metallic` and `roughness` as `u8` (0-255) into the Splat struct. Colour is always Oklab8+A (flags = 0x01). **48-byte splat size preserved.** `color_packed` byte order is **`L | a | b | A`** in the 32-bit value (see `data-specifications.md` §3.4 for the exact packing).
+8. **Renderer Overlay:** SDF/Volume renders depth first; splats render as a depth-tested overlay in world space using the same bounds and camera.
+9. **Renderer (WGSL):** Splat shader dequantises Oklab u8 -> Oklab float -> linear RGB (matrix multiply), then applies Cook-Torrance BRDF with GGX/Schlick-GGX/Fresnel-Schlick. Single decode path, no branching.
 
 ### Procedural Texture Patterns
 
@@ -802,3 +845,10 @@ Available noise-based patterns for DNA `procedural_texture` field (legacy `textu
 | `wood_grain` | Concentric ring pattern | `scale`, `intensity`, `ring_freq` |
 | `marble` | Veined stone with turbulence | `scale`, `intensity`, `vein_freq` |
 | `rust` | Cellular corrosion patches | `scale`, `intensity`, `cell_size` |
+
+**Texture Modifiers (DNA `texture_modifiers`):**
+- `edge_wear` (0.0-1.0): brightens edges and reduces roughness (curvature-based mask, power-smoothed).
+- `cavity_grime` (0.0-1.0): darkens recesses and increases roughness (curvature-based mask, power-smoothed).
+- `rust_amount` (0.0-1.0): tints toward rust, reduces metallic, with subtle per-patch lightness/roughness variation.
+
+Curvature proxy uses eps=0.003 and a power curve on the mask to reduce speckle. Applied at compile time during SDF attribute sampling on CPU to avoid GPU memory spikes.

@@ -33,6 +33,25 @@ def _get_client():
     return _client
 
 
+def clean_json_schema_for_gemini(obj: Any) -> Any:
+    """Clean JSON schema dict for Gemini API (remove additionalProperties, fix empty objects)."""
+    if isinstance(obj, dict):
+        obj = {k: v for k, v in obj.items() if k != "additionalProperties"}
+        if "items" in obj and isinstance(obj["items"], dict):
+            obj["items"] = clean_json_schema_for_gemini(obj["items"])
+        if obj.get("type") == "array" and "minItems" not in obj and "minLength" in obj:
+            obj["minItems"] = obj.pop("minLength")
+        # Batch API requires OBJECT types to have non-empty "properties" (e.g. PrimitiveParams.profile)
+        if obj.get("type") == "object":
+            props = obj.get("properties")
+            if not props or (isinstance(props, dict) and len(props) == 0):
+                obj["properties"] = {"_": {"type": "string", "description": "Reserved for flexible content"}}
+        return {k: clean_json_schema_for_gemini(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [clean_json_schema_for_gemini(item) for item in obj]
+    return obj
+
+
 @dataclass
 class AgentContext:
     """Context passed to each agent in the pipeline."""
@@ -203,12 +222,42 @@ class BaseAgent(ABC, Generic[T]):
                     "{rag_context.material_registry}",
                     json.dumps(context.rag_context.get("material_registry", {}), indent=2)
                 )
+            if "{rag_context.finish_registry}" in system:
+                system = system.replace(
+                    "{rag_context.finish_registry}",
+                    json.dumps(context.rag_context.get("finish_registry", {}), indent=2)
+                )
+            if "{rag_context.blacksmith_guidance}" in system:
+                system = system.replace(
+                    "{rag_context.blacksmith_guidance}",
+                    context.rag_context.get("blacksmith_guidance", ""),
+                )
         
         # Inject previous stage outputs
         for stage_name, output in context.previous_outputs.items():
+            if stage_name == "a1_part":
+                continue  # Handled below for per-part Machinist context
             placeholder = f"{{stage_{stage_name}_json}}"
             if placeholder in system:
                 system = system.replace(placeholder, json.dumps(output, indent=2))
+        
+        # Inject per-part Machinist context (a1_part: {"part_id": str, "part": dict})
+        a1_part = context.previous_outputs.get("a1_part")
+        if a1_part and isinstance(a1_part, dict):
+            part_id = a1_part.get("part_id", "")
+            part_json = json.dumps(a1_part.get("part", {}), indent=2)
+            if "{stage_a1_part_json}" in system:
+                system = system.replace("{stage_a1_part_json}", part_json)
+            if "{current_part_id}" in system:
+                system = system.replace("{current_part_id}", part_id)
+            # In per-part mode, leave stage_a1_json as already filled from a1; optional: overwrite with "(single part - see above)" to avoid duplicate
+            if "{stage_a1_json}" in system:
+                system = system.replace("{stage_a1_json}", "(Single part mode - part geometry is in STAGE A1 PART above.)")
+        else:
+            if "{stage_a1_part_json}" in system:
+                system = system.replace("{stage_a1_part_json}", "(Full asset mode - part list is in STAGE A1 OUTPUT below.)")
+            if "{current_part_id}" in system:
+                system = system.replace("{current_part_id}", "")
         
         # Inject style token
         if context.style_token and "{user_style_token}" in system:

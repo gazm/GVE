@@ -75,6 +75,8 @@ Input Point → [Modifier Stack] → Warped Point → [Base SDF] → Distance
 | `scale_min` | `float` | Scale at negative end (0.0-2.0) |
 | `scale_max` | `float` | Scale at positive end (0.0-2.0) |
 
+**Engine gap:** Taper is supported in the compiler (JIT/splat baking) but is **not** yet supported in the engine bytecode runtime. Assets using taper will render in-engine without the taper effect; the serializer skips Taper when emitting bytecode.
+
 ### 4. Mirror
 
 **Effect:** Mirrors the SDF across a plane, creating symmetric shapes.

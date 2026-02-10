@@ -13,7 +13,7 @@ const PI: f32 = 3.14159265359;
 
 struct Uniforms {
     mvp: mat4x4<f32>,
-    view: mat4x4<f32>,
+    view_inv: mat4x4<f32>,
     camera_pos: vec3<f32>,
     viewport: vec2<f32>,
 }
@@ -164,18 +164,16 @@ fn vs_main(
     let quad_y = f32((v_idx >> 1u) & 1u) * 2.0 - 1.0;
     out.uv = vec2<f32>(quad_x, quad_y);
 
-    // Splat normal from quaternion (local Z axis)
+    // Splat orientation from quaternion (local Z = normal, X/Y = tangent plane)
     let R = quat_to_mat3(instance.rotation);
     out.normal = normalize(R * vec3<f32>(0.0, 0.0, 1.0));
 
-    // Billboard with camera-facing quads
-    let cam_right = vec3<f32>(uniforms.view[0][0], uniforms.view[1][0], uniforms.view[2][0]);
-    let cam_up    = vec3<f32>(uniforms.view[0][1], uniforms.view[1][1], uniforms.view[2][1]);
-    let max_scale = max(instance.scale.x, max(instance.scale.y, instance.scale.z));
-
+    // Orient quad in splat's tangent plane (attached to SDF) instead of billboarding
+    let tangent_x = R[0];
+    let tangent_y = R[1];
     let world_pos = instance.center
-        + cam_right * quad_x * max_scale * 2.0
-        + cam_up    * quad_y * max_scale * 2.0;
+        + tangent_x * quad_x * instance.scale.x * 2.0
+        + tangent_y * quad_y * instance.scale.y * 2.0;
 
     out.world_pos = world_pos;
     out.clip_position = uniforms.mvp * vec4<f32>(world_pos, 1.0);
@@ -195,15 +193,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(in.normal);
     let V = normalize(uniforms.camera_pos - in.world_pos);
 
-    // Key light
+    // Key light (reduced so dark materials stay dark)
     let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
-    let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.5;
+    let light_col = vec3<f32>(1.0, 0.98, 0.95) * 1.2;
 
     var Lo = pbr_lighting(in.color.rgb, in.metallic, in.roughness, N, V, light_dir, light_col);
 
     // Fill light (soft, from below-left)
     let fill_dir = normalize(vec3<f32>(-0.3, -0.2, -0.5));
-    let fill_col = vec3<f32>(0.3, 0.35, 0.5) * 0.6;
+    let fill_col = vec3<f32>(0.3, 0.35, 0.5) * 0.35;
     Lo += pbr_lighting(in.color.rgb, in.metallic, in.roughness, N, V, fill_dir, fill_col);
 
     // Ambient (simple hemisphere)
@@ -224,7 +222,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 /// Volume Raymarching Shader
 ///
 /// Raymarches a 3D texture containing SDF distance values.
-/// Used for visualizing baked VDB/dense grid data.
+/// When use_triplanar is 1, samples triplanar textures at hit for base color.
 pub const VOLUME_SHADER: &str = r#"
 struct VolumeUniforms {
     inv_view_proj: mat4x4<f32>,
@@ -234,13 +232,24 @@ struct VolumeUniforms {
     _pad1: f32,
     bounds_max: vec3<f32>,
     _pad2: f32,
+    view_proj: mat4x4<f32>,
+    use_triplanar: u32,
+    triplanar_bounds_min: vec3<f32>,
+    _pad3: f32,
+    triplanar_bounds_max: vec3<f32>,
+    _pad4: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: VolumeUniforms;
 @group(0) @binding(1) var volume_texture: texture_3d<f32>;
 @group(0) @binding(2) var volume_sampler: sampler;
+@group(0) @binding(3) var triplanar_xy: texture_2d<f32>;
+@group(0) @binding(4) var triplanar_xz: texture_2d<f32>;
+@group(0) @binding(5) var triplanar_yz: texture_2d<f32>;
+@group(0) @binding(6) var triplanar_sampler: sampler;
 
-// Sample SDF from 3D texture (world position -> distance)
+// Sample SDF from 3D texture (world position -> distance).
+// Space: hit_pos, bounds_min, triplanar_bounds all share same world space (no model matrix).
 fn sample_sdf(world_pos: vec3<f32>) -> f32 {
     // Transform world position to UV [0,1] coordinates
     let uv = (world_pos - uniforms.bounds_min) / (uniforms.bounds_max - uniforms.bounds_min);
@@ -263,6 +272,28 @@ fn compute_gradient(p: vec3<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
+// Sample triplanar textures at world position; blend by normal. Returns vec4(rgb, roughness).
+// Use volume bounds so UVs match hit_pos coordinate space (same as SDF).
+fn sample_triplanar(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let bmin = uniforms.bounds_min;
+    let bmax = uniforms.bounds_max;
+    let extent = bmax - bmin;
+    let uv_xy = (p.xy - bmin.xy) / (extent.xy + vec2<f32>(0.0001));
+    let uv_xz = (p.xz - bmin.xz) / (vec2<f32>(extent.x, extent.z) + vec2<f32>(0.0001));
+    let uv_yz = (p.yz - bmin.yz) / (vec2<f32>(extent.y, extent.z) + vec2<f32>(0.0001));
+    let uv_xy_c = clamp(uv_xy, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let uv_xz_c = clamp(uv_xz, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let uv_yz_c = clamp(uv_yz, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let c_xy = textureSampleLevel(triplanar_xy, triplanar_sampler, uv_xy_c, 0.0);
+    let c_xz = textureSampleLevel(triplanar_xz, triplanar_sampler, uv_xz_c, 0.0);
+    let c_yz = textureSampleLevel(triplanar_yz, triplanar_sampler, uv_yz_c, 0.0);
+    let w = abs(n);
+    let total = w.x + w.y + w.z + 0.0001;
+    let rgb = (c_xy.rgb * w.z + c_xz.rgb * w.y + c_yz.rgb * w.x) / total;
+    let roughness = (c_xy.a * w.z + c_xz.a * w.y + c_yz.a * w.x) / total;
+    return vec4<f32>(rgb, roughness);
+}
+
 // Ray-box intersection (returns t_near, t_far)
 fn intersect_box(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
     let inv_rd = 1.0 / rd;
@@ -278,8 +309,13 @@ fn intersect_box(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(t_near, t_far);
 }
 
+struct VolumeHit {
+    color: vec4<f32>,
+    depth: f32,
+}
+
 // Sphere tracing through the volume
-fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
+fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
     // First, intersect with bounding box
     let t_bounds = intersect_box(ro, rd);
     if (t_bounds.x > t_bounds.y || t_bounds.y < 0.0) {
@@ -290,7 +326,10 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
             vec3<f32>(0.15, 0.2, 0.3),
             sky_t
         );
-        return vec4<f32>(sky_color, 1.0);
+        return VolumeHit(
+            vec4<f32>(sky_color, 1.0),
+            1.0
+        );
     }
     
     // Start at near intersection (or camera if inside)
@@ -331,17 +370,32 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
             n = vec3<f32>(0.0, 1.0, 0.0);
         }
 
-        let base_color = n * 0.5 + 0.5;
+        var base_color: vec3<f32>;
+        var roughness_val: f32 = 0.5;
+        if (uniforms.use_triplanar != 0u) {
+            let tri = sample_triplanar(hit_pos, n);
+            base_color = tri.rgb;
+            // Saturation boost so reds and other colors read true (splat averaging pulls toward grey).
+            let lum = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+            base_color = mix(vec3<f32>(lum, lum, lum), base_color, 1.45);
+            // Alpha stores baked roughness (0-1). Legacy bakes used alpha=1.0 -> treat as default 0.5.
+            roughness_val = select(0.5, tri.a, tri.a < 0.999);
+        } else {
+            base_color = n * 0.5 + 0.5;
+        }
         let V = normalize(uniforms.camera_pos - hit_pos);
         let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+        let fill_dir = normalize(vec3<f32>(-0.35, 0.4, -0.25));
         let H = normalize(V + light_dir);
-        let NdotL = max(dot(n, light_dir), 0.0);
+        let NdotL_key = max(dot(n, light_dir), 0.0);
+        let NdotL_fill = max(dot(n, fill_dir), 0.0);
         let NdotV = max(dot(n, V), 0.001);
         let NdotH = max(dot(n, H), 0.0);
         let HdotV = max(dot(H, V), 0.0);
+        let wrap = 0.25;
+        let NdotL = (NdotL_key + wrap) / (1.0 + wrap);
 
-        // GGX specular (roughness = 0.5 for volume preview)
-        let roughness_val = 0.5;
+        // GGX specular + energy-conserving diffuse (match mesh shader so base color isn't washed by white specular)
         let a = roughness_val * roughness_val;
         let a2 = a * a;
         let d_term = NdotH * NdotH * (a2 - 1.0) + 1.0;
@@ -353,18 +407,31 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
         let F0 = vec3<f32>(0.04);
         let F = F0 + (vec3<f32>(1.0) - F0) * pow(clamp(1.0 - HdotV, 0.0, 1.0), 5.0);
         let specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
-        let diffuse = base_color / 3.14159;
+        let kD = (vec3<f32>(1.0) - F);
+        let diffuse = kD * base_color / 3.14159;
 
-        let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.5;
-        let Lo = (diffuse + specular) * light_col * NdotL;
-
-        let ao = 0.5 + 0.5 * n.y;
-        let ambient = mix(vec3<f32>(0.06, 0.05, 0.04), vec3<f32>(0.12, 0.14, 0.18), n.y * 0.5 + 0.5) * base_color;
-        let color = (Lo + ambient) * ao;
+        let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.0;
+        let fill_col = vec3<f32>(0.6, 0.65, 0.75) * 0.5;
+        let Lo = (diffuse + specular) * light_col * NdotL + diffuse * fill_col * NdotL_fill;
+        // Lower ambient floor so shadows can go to black instead of grey
+        let ambient = mix(vec3<f32>(0.04, 0.035, 0.03), vec3<f32>(0.14, 0.16, 0.20), n.y * 0.5 + 0.5) * base_color;
+        let ao = 0.45 + 0.55 * (n.y * 0.5 + 0.5);
+        var color = (Lo + ambient) * ao;
+        // Pull grey-blacks toward black; only skip the very darkest to avoid crushing to pure black
+        let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        if (luma > 0.03) {
+            color = max(vec3<f32>(0.0), (color - vec3<f32>(0.02)) / 0.98);
+        }
         let mapped = color / (color + vec3<f32>(1.0));
         let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
 
-        return vec4<f32>(gamma, 1.0);
+        // Project hit position to clip space for depth buffer (NDC -1..1 -> 0..1)
+        let clip = uniforms.view_proj * vec4<f32>(hit_pos, 1.0);
+        let ndc_z = clip.z / clip.w;
+        return VolumeHit(
+            vec4<f32>(gamma, 1.0),
+            ndc_z * 0.5 + 0.5
+        );
     }
     
     // Sky gradient for miss
@@ -374,7 +441,10 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
         vec3<f32>(0.15, 0.2, 0.3),
         sky_t
     );
-    return vec4<f32>(sky_color, 1.0);
+    return VolumeHit(
+        vec4<f32>(sky_color, 1.0),
+        1.0
+    );
 }
 
 // Fullscreen triangle vertex shader
@@ -392,8 +462,13 @@ fn vs_fullscreen(@builtin(vertex_index) vertex_idx: u32) -> VertexOutput {
     return out;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fs_volume(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_volume(in: VertexOutput) -> FragOutput {
     let ndc = in.uv;
     
     // Reconstruct ray direction using inverse view-projection
@@ -403,6 +478,10 @@ fn fs_volume(in: VertexOutput) -> @location(0) vec4<f32> {
     let ray_origin = near_point.xyz / near_point.w;
     let ray_dir = normalize(far_point.xyz / far_point.w - ray_origin);
     
-    return raymarch_volume(ray_origin, ray_dir);
+    let result = raymarch_volume(ray_origin, ray_dir);
+    var out: FragOutput;
+    out.color = result.color;
+    out.depth = result.depth;
+    return out;
 }
 "#;

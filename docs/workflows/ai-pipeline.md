@@ -93,6 +93,7 @@ Orchestrator (Meta-Agent)
   ├─ Track A: Matter Pipeline (with concept image reference)
   │   ├─ Stage A1: Blacksmith (Form) ─ Uses concept for proportions
   │   ├─ Stage A2: Machinist (Function) ─ Uses concept for details
+  │   ├─ Stage A2.5: Material Prep (Auto-Tune) ─ Seeds material hints
   │   ├─ Stage A3: Artist (Surface) ─ Uses concept for materials
   │   └─ RAG Index: Approved concept → Learning Loop
   │
@@ -290,6 +291,10 @@ Focus on: silhouette, proportions, major structural blocks.
 
 **Task:** Add functionality by **carving** into the mass (Subtract operations).
 
+**Invocation:** The Machinist runs **per part**: one LLM call per top-level A1 part (each child of the SDF tree with an `id`). Each call receives only that part as context; all returned subtract operations are aggregated into a single `add_operations` list in DNA. Each operation includes `target_node_id` so the compiler can apply patches to the correct part when that is implemented (future work). If there are no parts with ids, a single asset-wide Machinist call is used as fallback.
+
+**Parallelization:** Per-part calls are submitted via the [Gemini Batch API](https://ai.google.dev/gemini-api/docs/batch-api) when possible (inline requests, under 20MB total). The concept image is uploaded once via the [Files API](https://ai.google.dev/gemini-api/docs/files) and referenced by `file_uri` in each request to keep the batch payload small. The batch runs in parallel at ~50% of standard cost; the pipeline polls until the job completes (max 30 minutes) then aggregates results. On batch failure or timeout, the pipeline falls back to sequential real-time Machinist calls.
+
 **Key Constraint:** Cannot delete Stage A1 nodes. Only **append** via Delta Patch.
 
 **Available Operations:**
@@ -349,7 +354,21 @@ Instead of 8 individual cylinders for bolts:
 Machine_Array_Radial(count=8, radius=0.5, primitive="cylinder")
 ```
 
-**Integration:** Merged with A1 → feeds A3.
+**Integration:** Merged with A1 → feeds A2.5.
+
+---
+
+### Stage A2.5: Material Prep (Auto-Tune)
+
+**Task:** Seed material hints and default procedural textures based on node IDs and known part types.  
+This stage is deterministic (no LLM) and does **not** override explicit Artist choices.
+
+**Rules:**
+- Fill gaps only (never overwrite Artist-provided material assignments).
+- Prefer conservative defaults (subtle metal micro-variation, clear wood grain).
+- Pass hints forward so the Artist can override or refine.
+
+**Integration:** Material hints → Artist prompt context → A3 output.
 
 ---
 
@@ -374,12 +393,14 @@ Machine_Array_Radial(count=8, radius=0.5, primitive="cylinder")
 | `metallic` | 0.0-1.0 | Override material registry metallic (optional) |
 | `roughness` | 0.0-1.0 | Override material registry roughness (optional) |
 
-**Texture Modifiers (per-node weathering) [aspirational -- not yet consumed by compiler]:**
+**Finishes (per-node, optional):** The Artist can output `finish_id` (e.g. `black_oxide`, `polished`, `painted_black`) for named surface treatments. The finish registry supplies base_color, roughness, and metallic overrides; the underlying `material_id` stays for semantics (audio, physics). Resolution order: material defaults → finish overrides → explicit base_color/roughness/metallic in the config. Use finishes when the concept shows a specific look (e.g. black pistol → METAL_STEEL + black_oxide) instead of guessing hex/roughness.
+
+**Texture Modifiers (per-node weathering):**
 | Modifier | Range | Effect |
 |----------|-------|--------|
-| `edge_wear` | 0.0-1.0 | Worn edges reveal underlying material |
-| `cavity_grime` | 0.0-1.0 | Dirt/grime in recesses |
-| `rust_amount` | 0.0-1.0 | Rust/corrosion on metals |
+| `edge_wear` | 0.0-1.0 | Worn edges brighten and reduce roughness |
+| `cavity_grime` | 0.0-1.0 | Recesses darken and increase roughness |
+| `rust_amount` | 0.0-1.0 | Rust/corrosion on metals (color + roughness) |
 
 **Procedural Textures (noise-based pattern overlay):**
 | Pattern | Effect | Best For |
@@ -409,13 +430,24 @@ You are The Artist. You define surface appearance and rendering quality.
 # AVAILABLE MATERIALS
 {rag_context.material_registry}
 
+# AVAILABLE FINISHES (optional)
+{rag_context.finish_registry}
+
 # STYLE TOKEN
 {user_style_token}  # e.g., "Cyberpunk", "WW2", "Industrial"
+
+# MATERIAL HINTS (Stage A2.5)
+{stage_material_prep_json}
 
 # OUTPUT FORMAT
 {
   "material_config": {
     "node_001": {
+      "material_id": "METAL_STEEL",
+      "finish_id": "black_oxide",
+      "texture_modifiers": { "edge_wear": 0.15, "cavity_grime": 0.15, "rust_amount": 0 }
+    },
+    "node_002": {
       "material_id": "METAL_STEEL",
       "base_color": "#5A5A5A",
       "metallic": 0.9,

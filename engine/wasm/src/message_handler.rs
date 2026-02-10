@@ -23,10 +23,11 @@ fn debug_gve_header(payload: &[u8]) {
     let volume_size = header.volume_size;
     let shell_offset = header.shell_mesh_offset;
     let vertex_count = header.vertex_count;
+    let triplanar_offset = header.triplanar_offset;
     
     web_sys::console::log_1(&format!(
-        "🔍 GVE Header Debug:\n  version={:#x}\n  volume_offset={}\n  volume_size={}\n  shell_offset={}\n  vertex_count={}",
-        version, volume_offset, volume_size, shell_offset, vertex_count
+        "🔍 GVE Header Debug:\n  version={:#x}\n  volume_offset={}\n  volume_size={}\n  shell_offset={}\n  vertex_count={}\n  triplanar_offset={}",
+        version, volume_offset, volume_size, shell_offset, vertex_count, triplanar_offset
     ).into());
     
     // Check if volume data exists
@@ -102,8 +103,9 @@ pub fn handle_binary_message(_engine: &mut WasmEngine, data: &[u8]) {
                 let has_mesh = _engine.renderer.has_mesh(asset_id);
                 let has_volume = _engine.renderer.has_volume(asset_id);
                 let has_splat = _engine.renderer.has_splat(asset_id);
-                web_sys::console::log_1(&format!("📊 Asset {} modes: mesh={}, volume={}, splat={}", 
-                    asset_id, has_mesh, has_volume, has_splat).into());
+                let has_triplanar = _engine.renderer.has_triplanar(asset_id);
+                web_sys::console::log_1(&format!("📊 Asset {} modes: mesh={}, volume={}, splat={}, triplanar={}", 
+                    asset_id, has_mesh, has_volume, has_splat, has_triplanar).into());
             } else {
                 web_sys::console::error_1(&format!("❌ Failed to load geometry: {:?}", err).into());
             }

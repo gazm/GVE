@@ -253,7 +253,9 @@ fn sdf_wedge(p: vec3<f32>, center: vec3<f32>, size: vec3<f32>, taper_axis: u32, 
     let t = clamp((dir_val + size_dir) / (2.0 * size_dir + 1e-8), 0.0, 1.0);
     let allowed = size_tap * (1.0 - t);
     let plane_d = abs(tap_val) - allowed;
-    return max(box_d, plane_d);
+    // Smooth intersection avoids gradient discontinuity at diagonal (removes jagged seam artifacts)
+    let wedge_k: f32 = 0.02;
+    return sdf_smooth_intersect(box_d, plane_d, wedge_k);
 }
 
 // =============================================================================
@@ -514,7 +516,7 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RaymarchResult {
         let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic_val);
         let diffuse = kD * base_color / 3.14159;
 
-        let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.5;
+        let light_col = vec3<f32>(1.0, 0.98, 0.95) * 1.2;
         let Lo = (diffuse + specular) * light_col * NdotL;
 
         // Ambient occlusion + hemisphere ambient
@@ -528,9 +530,10 @@ fn raymarch(ro: vec3<f32>, rd: vec3<f32>) -> RaymarchResult {
 
         result.color = vec4<f32>(gamma_out, 1.0);
         
-        // Project hit position to clip space for depth buffer
+        // Project hit position to clip space for depth buffer (map NDC -1..1 -> 0..1)
         let clip = uniforms.view_proj * vec4<f32>(hit_pos, 1.0);
-        result.depth = clip.z / clip.w;
+        let ndc_z = clip.z / clip.w;
+        result.depth = ndc_z * 0.5 + 0.5;
     } else {
         // Sky gradient for miss
         let sky_t = rd.y * 0.5 + 0.5;

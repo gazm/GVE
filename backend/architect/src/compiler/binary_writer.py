@@ -34,7 +34,7 @@ class GVEBinaryWriter:
     """
     Writes .gve_bin files according to engine/shared/src/binary_format.rs
     """
-    VERSION = 0x00021000  # v2.1 - OpenVDB support
+    VERSION = 0x00022000  # v2.2 - Triplanar texture support
     
     def __init__(self, path: Path):
         self.path = path
@@ -43,6 +43,7 @@ class GVEBinaryWriter:
         self.sdf_bytecode = b""     # SDF instruction bytecode
         self.volume_data = b""      # VDB Grid data
         self.splat_data = b""       # Gaussian splat data
+        self.triplanar_data = b""   # Triplanar textures (for SdfTextured mode)
         self.vertex_count = 0
         self.index_count = 0
         self.splat_count = 0
@@ -67,6 +68,10 @@ class GVEBinaryWriter:
         """Set Gaussian splat data."""
         self.splat_data = data
         self.splat_count = count
+        
+    def set_triplanar_data(self, data: bytes):
+        """Set triplanar texture data (for SdfTextured/VolumeTextured modes)."""
+        self.triplanar_data = data
         
     def write(self):
         """Write the binary file to disk."""
@@ -95,6 +100,10 @@ class GVEBinaryWriter:
         splat_data_offset = offset if self.splat_data else 0
         offset += len(self.splat_data)
         
+        # Triplanar texture data (uses metadata_offset field in header)
+        triplanar_offset = offset if self.triplanar_data else 0
+        offset += len(self.triplanar_data)
+        
         # Pack header
         header = struct.pack(
             HEADER_FMT,
@@ -106,7 +115,7 @@ class GVEBinaryWriter:
             splat_data_offset,       # splat_data_offset
             shell_mesh_offset,       # shell_mesh_offset
             0,                       # audio_patch_offset
-            0,                       # metadata_offset
+            triplanar_offset,        # metadata_offset (repurposed for triplanar in v2.2)
             sdf_bytecode_size,       # sdf_bytecode_size
             volume_size,             # sdf_texture_size (VDB size)
             self.splat_count,        # splat_count
@@ -136,12 +145,18 @@ class GVEBinaryWriter:
             # Write splat data
             if self.splat_data:
                 f.write(self.splat_data)
+            
+            # Write triplanar texture data
+            if self.triplanar_data:
+                f.write(self.triplanar_data)
 
 
 def _prepare_writer(
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
-    splat_data: Optional[bytes] = None
+    splat_data: Optional[bytes] = None,
+    sdf_bytecode: Optional[bytes] = None,
+    triplanar_data: Optional[bytes] = None,
 ) -> GVEBinaryWriter:
     """
     Prepare a GVEBinaryWriter with the given data.
@@ -151,9 +166,12 @@ def _prepare_writer(
     
     if volume_data:
         writer.set_volume_data(volume_data)
+        
+    if sdf_bytecode:
+        writer.set_sdf_bytecode(sdf_bytecode)
     
     if shell_data and len(shell_data) > 8:
-        # Parse shell_data from shell_gen format
+        # Parse shell_data from binary shell format
         vertex_count = struct.unpack("<I", shell_data[0:4])[0]
         
         # Each vertex is 6 floats (24 bytes): pos(3) + normal(3)
@@ -178,11 +196,15 @@ def _prepare_writer(
     else:
         print(f"  [binary_writer] ⚠️ No shell_data or too short: shell_data={shell_data is not None}, len={len(shell_data) if shell_data else 0}", flush=True)
     
-    # Parse and set splat data
+    # Parse and set splat data (strip the 4-byte count header — count is
+    # already stored in the GVE header's splat_count field)
     if splat_data and len(splat_data) >= 4:
-        # Splat data starts with u32 count header
         splat_count = struct.unpack("<I", splat_data[0:4])[0]
-        writer.set_splat_data(splat_data, splat_count)
+        writer.set_splat_data(splat_data[4:], splat_count)
+    
+    # Set triplanar texture data
+    if triplanar_data:
+        writer.set_triplanar_data(triplanar_data)
     
     return writer
 
@@ -191,12 +213,14 @@ def write_gve_bin(
     path: Path, 
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
-    splat_data: Optional[bytes] = None
+    splat_data: Optional[bytes] = None,
+    sdf_bytecode: Optional[bytes] = None,
+    triplanar_data: Optional[bytes] = None,
 ) -> Path:
     """
     Write a .gve_bin file from compiled data.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data)
+    writer = _prepare_writer(volume_data, shell_data, splat_data, sdf_bytecode, triplanar_data)
     writer.path = path
     writer.write()
     return path
@@ -205,14 +229,16 @@ def write_gve_bin(
 def write_gve_bin_bytes(
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
-    splat_data: Optional[bytes] = None
+    splat_data: Optional[bytes] = None,
+    sdf_bytecode: Optional[bytes] = None,
+    triplanar_data: Optional[bytes] = None,
 ) -> bytes:
     """
     Build .gve_bin data and return as bytes (no disk write).
     
     Used for stage previews during AI generation pipeline.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data)
+    writer = _prepare_writer(volume_data, shell_data, splat_data, sdf_bytecode, triplanar_data)
     
     # Calculate offsets (all relative to start of file)
     offset = HEADER_SIZE
@@ -238,6 +264,10 @@ def write_gve_bin_bytes(
     splat_data_offset = offset if writer.splat_data else 0
     offset += len(writer.splat_data)
     
+    # Triplanar texture data
+    triplanar_offset = offset if writer.triplanar_data else 0
+    offset += len(writer.triplanar_data)
+    
     # Pack header
     header = struct.pack(
         HEADER_FMT,
@@ -249,7 +279,7 @@ def write_gve_bin_bytes(
         splat_data_offset,
         shell_mesh_offset,
         0,  # audio_patch_offset
-        0,  # metadata_offset
+        triplanar_offset,  # metadata_offset (repurposed for triplanar in v2.2)
         sdf_bytecode_size,
         volume_size,
         writer.splat_count,
@@ -273,6 +303,9 @@ def write_gve_bin_bytes(
     
     if writer.splat_data:
         parts.append(writer.splat_data)
+    
+    if writer.triplanar_data:
+        parts.append(writer.triplanar_data)
     
     return b"".join(parts)
 

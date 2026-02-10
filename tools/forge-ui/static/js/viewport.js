@@ -57,7 +57,7 @@ window.clear_sdf = () => {
 
 /**
  * Set the rendering view mode for the current asset.
- * @param {string} mode - 'shell' | 'sdf' | 'splat'
+ * @param {string|number} mode - 'shell'|'sdf'|'splat'|'textured'|'overlay' OR 0|1|2|3|4
  */
 window.set_view_mode = (mode) => {
     if (!wasmEngineInitialized) return;
@@ -68,20 +68,36 @@ window.set_view_mode = (mode) => {
 
     console.log(`👁️ Setting view mode to: ${mode} for asset ${assetId}`);
 
-    switch (mode) {
-        case 'shell':
-        case 'mesh':
-            gve_wasm.set_view_mode(0, assetId);
-            break;
-        case 'sdf':
-            gve_wasm.set_view_mode(1, assetId);
-            break;
-        case 'splat':
-            gve_wasm.set_view_mode(2, assetId);
-            break;
-        default:
-            console.warn(`Unknown view mode: ${mode}`);
+    // Normalize mode to number
+    let modeNum;
+    if (typeof mode === 'number') {
+        modeNum = mode;
+    } else {
+        switch (mode) {
+            case 'shell':
+            case 'mesh':
+                modeNum = 0;
+                break;
+            case 'sdf':
+                modeNum = 1;
+                break;
+            case 'splat':
+                modeNum = 2;
+                break;
+            case 'textured':
+            case 'final':
+                modeNum = 3;
+                break;
+            case 'overlay':
+                modeNum = 4;
+                break;
+            default:
+                console.warn(`Unknown view mode: ${mode}`);
+                return;
+        }
     }
+
+    gve_wasm.set_view_mode(modeNum, assetId);
 };
 
 window.snap_camera_to = (x, y, z, yaw, pitch) => {
@@ -106,9 +122,9 @@ window.get_asset_modes = (assetId = null) => {
     const id = assetId || lastLoadedAsset.id;
     const bits = gve_wasm.get_asset_modes(id);
     const modes = {
-        mesh:   !!(bits & 0x01),
-        sdf:    !!(bits & 0x02),
-        splat:  !!(bits & 0x04),
+        mesh: !!(bits & 0x01),
+        sdf: !!(bits & 0x02),
+        splat: !!(bits & 0x04),
         volume: !!(bits & 0x08),
     };
     console.log(`📊 Asset ${id} modes:`, modes);
@@ -313,6 +329,21 @@ window.load_asset = async (url, assetId = 1, options = {}) => {
         const data = await response.arrayBuffer();
         console.log(`📦 Loaded ${data.byteLength} bytes`);
 
+        // Debug: Parse GVE Header to confirm Splat Data presence
+        // Header format: magic(4), version(4), flags(4), 
+        // offsets: sdf(8), vol(8), splat(8), shell(8), audio(8), meta(8)
+        // sizes: sdf(4), vol(4), splat_count(4), vert_count(4)
+        if (data.byteLength >= 84) {
+            const dv = new DataView(data);
+            const splatOffset = Number(dv.getBigUint64(28, true));
+            const splatCount = dv.getUint32(68, true);
+            console.log(`🔍 JS Header Check:
+  Splat Offset: ${splatOffset} (Expected > 0)
+  Splat Count: ${splatCount} (Expected ~10000)
+  File Size: ${data.byteLength}
+  Estimated Splat Size: ${splatCount * 48} bytes`);
+        }
+
         // Parse bounds from binary header
         const bounds = updateBoundsFromBinary(data);
 
@@ -514,16 +545,40 @@ export async function initViewport(canvasId) {
 
         const start = performance.now();
         let lastTime = start;
+        let frames = 0;
+        let lastFpsTime = start;
+
+        // FPS Limit Config
+        const TARGET_FPS = 60;
+        const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
         function frame(time) {
-            const dt = (time - lastTime) / 1000;
-            lastTime = time;
+            requestAnimationFrame(frame);
+
+            const dt = time - lastTime;
+
+            // Cap at 60 FPS
+            if (dt < FRAME_INTERVAL) return;
+
+            // Adjust lastTime to account for the interval, but don't drift
+            lastTime = time - (dt % FRAME_INTERVAL);
+
+            // Calculate smooth DT for physics/rendering (in seconds)
+            const dtSeconds = dt / 1000;
 
             if (wasmEngineInitialized) {
-                gve_wasm.render_frame(dt);
+                gve_wasm.render_frame(dtSeconds);
+                pollDebugInfo();
             }
 
-            requestAnimationFrame(frame);
+            // FPS Calculation
+            frames++;
+            if (time - lastFpsTime >= 1000) {
+                window.debug_fps = frames;
+                window.debug_frametime = 1000 / frames;
+                frames = 0;
+                lastFpsTime = time;
+            }
         }
 
         requestAnimationFrame(frame);
@@ -535,6 +590,71 @@ export async function initViewport(canvasId) {
     } catch (err) {
         console.error("❌ Failed to initialize WASM viewport:", err);
         engineInitializing = false;
+    }
+}
+
+
+// Debug Info Polling
+function pollDebugInfo() {
+    if (!gve_wasm.get_debug_info) return;
+
+    const infoJson = gve_wasm.get_debug_info();
+    if (!infoJson || infoJson === '{}') return;
+
+    let overlay = document.getElementById('debug-overlay');
+
+    // Find canvas to attach to
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'debug-overlay';
+
+        // Attach to parent of canvas (viewport container)
+        if (canvas.parentElement) {
+            // Ensure parent allows absolute positioning of children
+            const style = window.getComputedStyle(canvas.parentElement);
+            if (style.position === 'static') {
+                canvas.parentElement.style.position = 'relative';
+            }
+            canvas.parentElement.appendChild(overlay);
+        } else {
+            document.body.appendChild(overlay);
+        }
+    }
+
+    // Helper to format large IDs (volume/sdf IDs can be huge u64)
+    const fmtId = (val) => {
+        if (!val || val === 'null' || val === undefined) return '-';
+        // If it's a long number string, show last 8 chars
+        const s = String(val);
+        if (s.length > 8) return '...' + s.slice(-8);
+        return s;
+    };
+
+    try {
+        const info = JSON.parse(infoJson);
+
+        // Calculate/Get JS-side stats
+        const fps = window.debug_fps || 0;
+        const frameTime = window.debug_frametime || 0;
+
+        overlay.innerHTML = `
+            <div style="font-weight:bold; color:#0f0">GVE DEBUG</div>
+            <div style="font-size: 0.9em; margin-bottom: 4px; color: #ccc">
+                FPS: <span style="color: ${fps < 55 ? '#f88' : '#fff'}">${fps}</span> 
+                (${frameTime.toFixed(1)}ms)
+            </div>
+            <div>Mode: ${info.view_mode}</div>
+            <div>SDF: ${fmtId(info.active_assets?.sdf)}</div>
+            <div>Splat: ${fmtId(info.active_assets?.splat)}</div>
+            <div>Vol: ${fmtId(info.active_assets?.volume)}</div>
+            <div>Cam: ${info.camera?.pos ? info.camera.pos.map(v => Number(v).toFixed(1)).join(',') : '-'}</div>
+            <div>Yaw: ${info.camera?.yaw ? Number(info.camera.yaw).toFixed(2) : '-'}</div>
+        `;
+    } catch (e) {
+        console.error("Debug JSON parse error", e);
     }
 }
 

@@ -210,7 +210,7 @@ Controls for material assignment and splat generation.
 {
   "material": {
     "spec_id": "ASTM_C114",  // Material from registry
-    "base_color": "#FF5733" | [0.8, 0.2, 0.1],  // Hex or sRGB [0-1] array (converted to Oklab internally)
+    "base_color": "#FF5733" | [0.8, 0.2, 0.1] | [204, 51, 25],  // Hex or sRGB [0-1]/[0-255] array (converted to Oklab internally)
     "metallic": 0.8,
     "roughness": 0.3,
     "emissive": [0.0, 0.5, 1.0],  // RGB additive glow
@@ -238,6 +238,10 @@ Controls for material assignment and splat generation.
 - Zero overhead: same 4 bytes as RGBA8
 
 > **Note:** The `color_mode` field in DNA MaterialConfig is retained for future use but the compiler always produces Oklab output. The `flags` byte in the splat struct is always `0x01`.
+
+#### Finishes (optional)
+
+Per-node material config may include **`finish_id`** (e.g. `black_oxide`, `polished`, `painted_black`). Finishes are named visual overrides supplied by the librarian finish registry; they provide `base_color`, `roughness`, and/or `metallic` so the AI can describe surface treatment without guessing values. **Resolution order:** 1) Material registry defaults (from `material_id`), 2) Finish overrides (from `finish_id`), 3) Explicit `base_color` / `roughness` / `metallic` in the config (explicit wins). The underlying material remains for semantics (e.g. METAL_STEEL + black_oxide keeps steel for audio/physics).
 
 #### Surface Texture Modifiers
 
@@ -786,7 +790,8 @@ struct Splat {
 **Color Packing (Oklab — single format):**
 ```rust
 // flags is always 0x01 (Oklab)
-color_packed = (L_u8 << 24) | (a_scaled << 16) | (b_scaled << 8) | A_u8
+// Little-endian byte order: [L, a, b, A] in memory
+color_packed = (A_u8 << 24) | (b_scaled << 16) | (a_scaled << 8) | L_u8
 // where: L_u8     = clamp(L * 255, 0, 255)
 //        a_scaled = clamp((a + 0.4) / 0.8 * 255, 0, 255)
 //        b_scaled = clamp((b + 0.4) / 0.8 * 255, 0, 255)
@@ -795,7 +800,28 @@ color_packed = (L_u8 << 24) | (a_scaled << 16) | (b_scaled << 8) | A_u8
 
 **Size:** 70k splats × 48 bytes ≈ 3.36MB (uncompressed)
 
-### 3.5 Shell Mesh Section
+### 3.5 Triplanar Texture Section (Optional, v2.2+)
+
+**Purpose:** Reserved for future compile-time triplanar textures. The current renderer does not consume this section (overlay mode uses splats directly).
+
+```text
+Offset: header.triplanar_offset (0 if absent)
+Header (32 bytes):
+  magic:      [u8; 4]  "TRI1"
+  resolution: u32      // square texture size
+  bounds_min: [f32; 3]
+  bounds_max: [f32; 3]
+Data:
+  xy: [u8; res * res * 4]  // RGBA8 (linear RGB)
+  xz: [u8; res * res * 4]
+  yz: [u8; res * res * 4]
+```
+
+**Notes:**
+- If present in the binary, this section is ignored by the current renderer.
+- Overlay mode uses splat data directly with depth testing against SDF/volume.
+
+### 3.6 Shell Mesh Section
 
 **Purpose:** Depth-only rasterization for Pass 1 (Early-Z)
 

@@ -8,13 +8,15 @@ router = APIRouter()
 class CompileTriggerRequest(BaseModel):
     priority: Optional[CompilePriority] = CompilePriority.NORMAL
     force_recompile: bool = False
+    options: Optional[dict] = None
 
 @router.post("/{asset_id}")
 async def trigger_compile(asset_id: str, request: CompileTriggerRequest):
     job_id = await enqueue_compile(
         asset_id, 
         priority=request.priority, 
-        force_recompile=request.force_recompile
+        force_recompile=request.force_recompile,
+        compile_options=request.options,
     )
     return {"job_id": job_id, "status": "queued"}
 

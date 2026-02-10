@@ -29,8 +29,9 @@ from .math_jit_modifiers import (
     TransformNode,
     build_modifier,
 )
-from .math_jit_noise import ProceduralTextureNode
+from .math_jit_noise import ProceduralTextureNode, TextureModifierNode
 from ..librarian.materials import get_material
+from ..librarian.finishes import get_finish
 from .oklab import srgb_to_oklab
 
 
@@ -70,7 +71,7 @@ def _apply_modifiers_and_transform(node: nn.Module, node_data: Dict) -> nn.Modul
     """
     Apply modifiers, procedural textures, and transform to a node.
     
-    Order: Base SDF → Modifiers → Procedural Texture → Transform
+    Order: Base SDF → Modifiers → Procedural Texture → Texture Modifiers → Transform
     The transform is applied last so it positions the already-modified shape.
     """
     result = node
@@ -91,9 +92,20 @@ def _apply_modifiers_and_transform(node: nn.Module, node_data: Dict) -> nn.Modul
             intensity=float(tex_pattern.get("intensity", 0.3)),
             color_variation=float(tex_pattern.get("color_variation", 0.2)),
             roughness_variation=float(tex_pattern.get("roughness_variation", 0.1)),
+            metallic_variation=float(tex_pattern.get("metallic_variation", 0.0)),
         )
     
-    # 2. Apply transform (if non-identity)
+    # 3. Apply texture modifiers (edge wear, grime, rust) if present
+    tex_mod = node_data.get("texture_modifiers")
+    if tex_mod and isinstance(tex_mod, dict):
+        result = TextureModifierNode(
+            child=result,
+            edge_wear=_safe_float(tex_mod.get("edge_wear"), 0.0),
+            cavity_grime=_safe_float(tex_mod.get("cavity_grime"), 0.0),
+            rust_amount=_safe_float(tex_mod.get("rust_amount"), 0.0),
+        )
+    
+    # 4. Apply transform (if non-identity)
     transform = node_data.get("transform")
     if transform:
         pos = transform.get("pos", [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0]
@@ -131,7 +143,47 @@ def _apply_modifiers_and_transform(node: nn.Module, node_data: Dict) -> nn.Modul
     return result
 
 
-def _resolve_material(material_id: Union[int, str], explicit_color: Optional[List[float]] = None) -> Tuple[List[float], float, float]:
+def _parse_srgb_color(value: Optional[Union[List[float], str]]) -> Optional[List[float]]:
+    """Parse sRGB color from hex or list into 0-1 floats."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if s.startswith("#"):
+            s = s[1:]
+        if len(s) in (6, 8):
+            try:
+                r = int(s[0:2], 16)
+                g = int(s[2:4], 16)
+                b = int(s[4:6], 16)
+                return [r / 255.0, g / 255.0, b / 255.0]
+            except ValueError:
+                return None
+        return None
+    if isinstance(value, list) and len(value) >= 3:
+        try:
+            rgb = [float(value[0]), float(value[1]), float(value[2])]
+        except (TypeError, ValueError):
+            return None
+        max_val = max(rgb)
+        if max_val > 1.0:
+            return [v / 255.0 for v in rgb]
+        return rgb
+    return None
+
+
+def _safe_float(value: Optional[object], default: float = 0.0) -> float:
+    """Coerce to float with a safe fallback."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_material(
+    material_id: Union[int, str],
+    explicit_color: Optional[Union[List[float], str]] = None,
+) -> Tuple[List[float], float, float]:
     """Resolve material ID to ``(oklab_color, metallic, roughness)``.
 
     Priority: explicit sRGB color > material registry lookup > default gray.
@@ -140,9 +192,10 @@ def _resolve_material(material_id: Union[int, str], explicit_color: Optional[Lis
     default_color = [0.627, 0.0, 0.0]  # approx mid-gray in Oklab
 
     # 1. Use explicit color if available (sRGB [0-1])
-    if explicit_color is not None and len(explicit_color) >= 3:
+    parsed_color = _parse_srgb_color(explicit_color)
+    if parsed_color is not None:
         try:
-            srgb = torch.tensor(explicit_color[:3], dtype=torch.float32)
+            srgb = torch.tensor(parsed_color[:3], dtype=torch.float32)
             oklab = srgb_to_oklab(srgb.unsqueeze(0))[0].tolist()
             return oklab, 0.0, 0.5
         except Exception:
@@ -169,11 +222,18 @@ def build_node(node_data: Dict) -> nn.Module:
     # Handle AI-generated format: {"type": "primitive", "shape": "sphere", "params": {...}}
     if node_type == "primitive":
         shape = node_data.get("shape", "sphere").lower()
-        params = node_data.get("params", {}) or {}
-        
+        raw_params = node_data.get("params", {}) or {}
+        # Strip operation-only keys that sometimes appear inside params (errant DNA from LLM)
+        _operation_keys = {"op", "children", "k"}
+        params = {k: v for k, v in raw_params.items() if k not in _operation_keys}
+
         # Get material properties (color + PBR)
-        # Check both node_data (legacy/top-level) and params (AI-gen) for color
-        explicit_color = node_data.get("color") or params.get("color")
+        # Check node_data, params.color, and params.base_color (AI-gen)
+        explicit_color = (
+            node_data.get("color")
+            or params.get("color")
+            or params.get("base_color")
+        )
         raw_mat = node_data.get("material_id", 0)
         
         color, metallic, roughness = _resolve_material(raw_mat, explicit_color)
@@ -294,13 +354,24 @@ def build_node(node_data: Dict) -> nn.Module:
             return IntersectNode(children)
         elif op == "smooth_union":
             k = float(node_data.get("smoothness", node_data.get("k", 0.5)))
-            return SmoothUnionNode(children, k=k)
+            if len(children) <= 2:
+                return SmoothUnionNode(children, k=k)
+            # Fold to binary tree so all primitives participate (SmoothUnionNode is binary)
+            acc = children[0]
+            for c in children[1:]:
+                acc = SmoothUnionNode([acc, c], k=k)
+            return acc
         elif op == "smooth_subtract":
             k = float(node_data.get("smoothness", node_data.get("k", 0.5)))
             return SmoothSubtractNode(children, k=k)
         elif op == "smooth_intersect":
             k = float(node_data.get("smoothness", node_data.get("k", 0.5)))
-            return SmoothIntersectNode(children, k=k)
+            if len(children) <= 2:
+                return SmoothIntersectNode(children, k=k)
+            acc = children[0]
+            for c in children[1:]:
+                acc = SmoothIntersectNode([acc, c], k=k)
+            return acc
         elif children:
             return UnionNode(children)
         else:
@@ -318,17 +389,81 @@ def build_node(node_data: Dict) -> nn.Module:
     return SphereNode(radius=0.0)
 
 
-def _prepare_dna(dna: Dict) -> Dict:
-    """Merge ``dna["materials"]`` into each node's data before building.
+def _find_parent_and_index(node: Dict, target_id: str, parent: Optional[Dict] = None, index_in_parent: Optional[int] = None) -> Tuple[Optional[Dict], Optional[int]]:
+    """Find (parent, child_index) of the node with id == target_id. Returns (None, None) if not found."""
+    if node.get("id") == target_id:
+        return (parent, index_in_parent)
+    children = node.get("children") or node.get("nodes") or []
+    for i, child in enumerate(children):
+        p, idx = _find_parent_and_index(child, target_id, node, i)
+        if p is not None:
+            return (p, idx)
+    return (None, None)
 
-    The AI pipeline stores material assignments in a top-level dict keyed
-    by node ID.  This function pushes those values into the node dicts so
-    ``build_node`` can read them without any special-casing.  Also normalises
-    the ``procedural_texture`` field name (AI) vs ``texture_pattern`` (legacy).
+
+def _inject_machining_patches(dna: Dict) -> None:
+    """
+    Inject A2 Machinist subtract patches into the SDF tree.
+    Each patch targets a node by id and wraps it as subtract(target, patch_geometry).
+    Mutates dna["root_node"] in place. Multiple patches to the same target accumulate.
+    """
+    patches = dna.get("machining_patches") or []
+    if not patches:
+        return
+    root = dna.get("root_node")
+    if not root:
+        return
+    applied = 0
+    for patch in patches:
+        if not isinstance(patch, dict):
+            continue
+        target_id = patch.get("target_node_id")
+        sub = patch.get("subtract")
+        if not target_id or not sub or not isinstance(sub, dict):
+            continue
+        parent, idx = _find_parent_and_index(root, target_id)
+        if parent is None or idx is None:
+            print(f"      [prepare_dna] ⚠️ Machinist patch target not found: {target_id}", flush=True)
+            continue
+        child_list = parent.get("children") or parent.get("nodes") or []
+        child = child_list[idx]
+        # Subtract primitive -> node dict: type primitive, shape, params, transform
+        sub_node: Dict = {
+            "type": "primitive",
+            "shape": sub.get("shape", "box"),
+            "params": sub.get("params") or sub.get("param") or {},
+            "transform": sub.get("transform"),
+        }
+        op = (patch.get("op") or "subtract").lower()
+        new_op: Dict = {
+            "type": "operation",
+            "op": op,
+            "children": [child, sub_node],
+        }
+        if op == "smooth_subtract" and patch.get("k") is not None:
+            new_op["k"] = float(patch["k"])
+        key = "children" if "children" in parent else "nodes"
+        parent[key][idx] = new_op
+        applied += 1
+    if applied:
+        print(f"      [prepare_dna] 🔧 Injected {applied} Machinist patches", flush=True)
+
+
+def _prepare_dna(dna: Dict) -> Dict:
+    """Merge ``dna["materials"]`` and ``dna["machining_patches"]`` before building.
+
+    - Machining patches (A2) are injected into the tree as subtract ops per target_node_id.
+    - Materials (A3) are merged into each node's data so ``build_node`` can read them.
+    Also normalises ``procedural_texture`` (AI) vs ``texture_pattern`` (legacy).
     """
     materials = dna.get("materials", {})
-    if not materials:
+    n_mats = len(materials) if isinstance(materials, dict) else 0
+    if n_mats:
+        print(f"      [prepare_dna] 📦 materials: {n_mats} entries", flush=True)
+    else:
         return dna
+
+    inject_count = [0]  # mutable so inner fn can update
 
     def _inject(node: Dict) -> None:
         node_id = node.get("id")
@@ -340,19 +475,35 @@ def _prepare_dna(dna: Dict) -> Dict:
             elif not isinstance(cfg, dict):
                 cfg = vars(cfg)
 
-            # Map AI fields -> compiler fields
-            if "base_color" in cfg and "color" not in (node.get("params") or {}):
-                node.setdefault("params", {})["color"] = cfg["base_color"]
+            params = node.setdefault("params", {})
+
+            # 1. Apply finish overrides first (if finish_id set)
+            finish_id = cfg.get("finish_id")
+            if finish_id:
+                finish = get_finish(finish_id)
+                if finish:
+                    if finish.get("base_color") is not None and "color" not in params:
+                        params["color"] = finish["base_color"]
+                    for key in ("roughness", "metallic"):
+                        if finish.get(key) is not None:
+                            params[key] = finish[key]
+
+            # 2. Map AI fields -> compiler fields (explicit overrides finish)
+            if "base_color" in cfg and cfg["base_color"] is not None:
+                params["color"] = cfg["base_color"]
             if "material_id" in cfg:
                 node["material_id"] = cfg["material_id"]
             if "procedural_texture" in cfg and cfg["procedural_texture"]:
                 node["procedural_texture"] = cfg["procedural_texture"]
+            if "texture_modifiers" in cfg and cfg["texture_modifiers"]:
+                node["texture_modifiers"] = cfg["texture_modifiers"]
             for key in ("metallic", "roughness"):
                 if key in cfg and cfg[key] is not None:
-                    node.setdefault("params", {})[key] = cfg[key]
+                    params[key] = cfg[key]
+            inject_count[0] += 1
 
-        # Recurse into children
-        for child in node.get("children") or []:
+        # Recurse into children (and "nodes" for alternate tree shape)
+        for child in node.get("children") or node.get("nodes") or []:
             _inject(child)
 
     if "root_node" in dna:
@@ -360,12 +511,46 @@ def _prepare_dna(dna: Dict) -> Dict:
     elif "nodes" in dna:
         for n in dna["nodes"]:
             _inject(n)
+    if n_mats and inject_count[0] != n_mats:
+        print(f"      [prepare_dna] ⚠️ Injected {inject_count[0]} nodes (materials has {n_mats} keys)", flush=True)
     return dna
+
+
+def collect_node_bounds(dna: Dict) -> List[Tuple[str, List[float], List[float]]]:
+    """
+    Collect world-space AABB (bmin, bmax) for every node that has an "id".
+    Call after _prepare_dna(dna) (e.g. dna passed to build_sdf_graph is already prepared).
+    Returns: [(node_id, bmin, bmax), ...] with bmin/bmax as 3-element lists.
+    """
+    out: List[Tuple[str, List[float], List[float]]] = []
+
+    def traverse(node: Dict) -> None:
+        node_id = node.get("id")
+        if node_id:
+            try:
+                built = build_node(node)
+                if hasattr(built, "compute_bounds"):
+                    b_min, b_max = built.compute_bounds()
+                    b_min = b_min.detach().cpu().tolist()
+                    b_max = b_max.detach().cpu().tolist()
+                    out.append((node_id, b_min, b_max))
+            except Exception as e:
+                print(f"    ⚠️ collect_node_bounds skip {node_id}: {e}", flush=True)
+        for child in node.get("children") or []:
+            traverse(child)
+
+    if "root_node" in dna:
+        traverse(dna["root_node"])
+    elif "nodes" in dna:
+        for n in dna["nodes"]:
+            traverse(n)
+    return out
 
 
 def build_sdf_graph(dna: Dict) -> SdfGraph:
     """Convert DNA JSON to PyTorch SDF evaluation graph."""
-    # Merge AI-assigned materials into node dicts first
+    # Inject A2 Machinist patches (subtract ops) into tree, then merge A3 materials
+    _inject_machining_patches(dna)
     _prepare_dna(dna)
 
     bounds = None
@@ -374,14 +559,24 @@ def build_sdf_graph(dna: Dict) -> SdfGraph:
         eb = metadata["estimated_bounds"]
         bounds = (eb.get("min", [-1, -1, -1]), eb.get("max", [1, 1, 1]))
     
+    root = None
     if "root_node" in dna:
         root = build_node(dna["root_node"])
-        return SdfGraph(root, bounds=bounds)
-    
-    if "nodes" in dna:
+    elif "nodes" in dna:
         children = [build_node(n) for n in dna["nodes"]]
         root = UnionNode(children) if len(children) > 1 else children[0]
-        return SdfGraph(root, bounds=bounds)
-    
-    root = build_node(dna)
+    else:
+        root = build_node(dna)
+        
+    # Auto-calculate bounds if missing
+    if bounds is None and hasattr(root, "compute_bounds"):
+        try:
+            b_min, b_max = root.compute_bounds()
+            # Ensure we export lists of floats
+            bounds = (b_min.cpu().tolist(), b_max.cpu().tolist())
+            print(f"    📐 Auto-calculated bounds: {bounds}", flush=True)
+        except Exception as e:
+            print(f"    ⚠️ Failed to calculate bounds: {e}", flush=True)
+            bounds = ([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0])
+
     return SdfGraph(root, bounds=bounds)

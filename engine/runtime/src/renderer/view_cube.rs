@@ -1,4 +1,3 @@
-use wgpu::util::DeviceExt;
 use glam::{Mat4, Vec3, Vec4};
 use std::mem;
 
@@ -105,7 +104,7 @@ impl ViewCube {
         }
     }
 
-    pub fn render(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, rotation_matrix: Mat4, screen_width: u32, screen_height: u32) {
+    pub fn render(&self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, rotation_matrix: Mat4, screen_width: u32, _screen_height: u32) {
         // View Cube Viewport: Top-Right 100x100
         let cube_size = 120.0;
         let padding = 10.0;
@@ -139,7 +138,7 @@ impl ViewCube {
     }
 
     /// Raycast against the view cube
-    pub fn raycast(&self, mouse_x: f32, mouse_y: f32, screen_width: u32, screen_height: u32, view_matrix: Mat4) -> Option<CubeFace> {
+    pub fn raycast(&self, mouse_x: f32, mouse_y: f32, screen_width: u32, _screen_height: u32, view_matrix: Mat4) -> Option<CubeFace> {
         let cube_size = 120.0;
         let padding = 10.0;
         let viewport_x = screen_width as f32 - cube_size - padding;
@@ -162,23 +161,10 @@ impl ViewCube {
         let view_fixed = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y);
         let inv_proj_view = (proj * view_fixed).inverse();
         
-        let ray_clip = Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
-        let mut ray_eye = inv_proj_view * ray_clip;
-        ray_eye.z = -1.0; 
-        ray_eye.w = 0.0;
-        // World ray? No, we are in "World" of the cube render pass, where camera is fixed at 0,0,3
-        // But the CUBE is rotated.
-        // Easiest to Raycast in Object Space (Cube Space).
-        
-        // FixedView -> World (Inverse FixedView) = Camera Local
-        // World -> Object (Inverse Model)
-        
         // Matrix to Object Space:
         // InvModel * InvFixedView * InvProj
         // Model = ViewMatrix.Inverse() (CameraToWorld)
         // So InvModel = ViewMatrix (WorldToCamera)
-        
-        let model = view_matrix.inverse();
         let inv_model = view_matrix; 
         
         let to_object = inv_model * inv_proj_view;

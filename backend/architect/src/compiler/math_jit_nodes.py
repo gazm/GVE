@@ -2,7 +2,12 @@
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
+
+print("🟢 Loading math_jit_nodes.py...", flush=True)
+
+# Oklab mid-gray (matches math_jit_builder._resolve_material default). Do not use sRGB [0.5,0.5,0.5].
+_DEFAULT_OKLAB = [0.627, 0.0, 0.0]
 
 
 class PrimitiveNode(nn.Module):
@@ -17,7 +22,7 @@ class PrimitiveNode(nn.Module):
         roughness: float = 0.5,
     ):
         super().__init__()
-        c = color if color is not None else [0.5, 0.5, 0.5]
+        c = color if color is not None else _DEFAULT_OKLAB
         attrs = c + [metallic, roughness]
         self.register_buffer('attrs', torch.tensor(attrs, dtype=torch.float32))
 
@@ -25,17 +30,35 @@ class PrimitiveNode(nn.Module):
         """Attach [N, 5] attribute tensor (color + metallic + roughness) to distances."""
         return dist, self.attrs.unsqueeze(0).expand(dist.shape[0], 5)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Calculate local AABB (min_xyz, max_xyz).
+        
+        Returns:
+            (min, max) tuple of [3] tensors.
+        """
+        # Default unit box if not implemented
+        return (
+            torch.tensor([-1.0, -1.0, -1.0], device=self.attrs.device),
+            torch.tensor([1.0, 1.0, 1.0], device=self.attrs.device)
+        )
+
 
 class SphereNode(PrimitiveNode):
     def __init__(self, radius: float, color: List[float] = None, metallic: float = 0.0, roughness: float = 0.5):
         super().__init__(color, metallic, roughness)
         self.radius = radius
-        # print(f"    🔵 SphereNode: radius={radius}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # ||x|| - r
         dist = torch.norm(x, dim=1) - self.radius
         return self._return_with_attributes(dist)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        r = self.radius
+        return (
+            torch.tensor([-r, -r, -r], device=self.attrs.device),
+            torch.tensor([r, r, r], device=self.attrs.device)
+        )
 
 
 class BoxNode(PrimitiveNode):
@@ -43,7 +66,6 @@ class BoxNode(PrimitiveNode):
         super().__init__(color, metallic, roughness)
         # Size IS already half-extents from AI output (box spans from -size to +size)
         self.register_buffer('b', torch.tensor(size, dtype=torch.float32))
-        # print(f"    📦 BoxNode: half-extents={size}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         q = torch.abs(x) - self.b
@@ -51,13 +73,15 @@ class BoxNode(PrimitiveNode):
                torch.clamp(torch.max(q, dim=1)[0], max=0.0)
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        return (-self.b, self.b)
+
 
 class CylinderNode(PrimitiveNode):
     def __init__(self, radius: float, height: float, color: List[float] = None, metallic: float = 0.0, roughness: float = 0.5):
         super().__init__(color, metallic, roughness)
         self.radius = radius
         self.height = height
-        # print(f"    🔷 CylinderNode: radius={radius}, height={height}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Cylinder aligned with Z axis (forward direction for weapons/barrels)
@@ -72,6 +96,14 @@ class CylinderNode(PrimitiveNode):
         dist = inside + outside
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        r = self.radius
+        h = self.height / 2.0
+        return (
+            torch.tensor([-r, -r, -h], device=self.attrs.device),
+            torch.tensor([r, r, h], device=self.attrs.device)
+        )
+
 
 class TorusNode(PrimitiveNode):
     """Torus (donut) SDF - ring in XZ plane, Y is up."""
@@ -79,7 +111,6 @@ class TorusNode(PrimitiveNode):
         super().__init__(color, metallic, roughness)
         self.major_r = major_r
         self.minor_r = minor_r
-        # print(f"    🍩 TorusNode: major_r={major_r}, minor_r={minor_r}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Distance to ring center in XZ plane
@@ -88,6 +119,15 @@ class TorusNode(PrimitiveNode):
         q = torch.stack([q_xz, x[:, 1]], dim=1)
         dist = torch.norm(q, dim=1) - self.minor_r
         return self._return_with_attributes(dist)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # XZ plane ring
+        R = self.major_r + self.minor_r
+        r = self.minor_r
+        return (
+            torch.tensor([-R, -r, -R], device=self.attrs.device),
+            torch.tensor([R, r, R], device=self.attrs.device)
+        )
 
 
 class ConeNode(PrimitiveNode):
@@ -99,7 +139,6 @@ class ConeNode(PrimitiveNode):
         # Compute cone angle
         self.sin_cos = torch.tensor([radius, height], dtype=torch.float32)
         self.sin_cos = self.sin_cos / torch.norm(self.sin_cos)  # [sin, cos]
-        # print(f"    🔺 ConeNode: radius={radius}, height={height}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Shift so base is at z=0, tip at z=height (Z-axis aligned)
@@ -120,6 +159,17 @@ class ConeNode(PrimitiveNode):
         dist = torch.clamp(inside, min=-self.height, max=self.height)
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Bounds based on previous analysis: z in [h/2, 3h/2]
+        # Base (widest) at z=h/2 with radius r.
+        r = self.radius
+        z_min = self.height / 2.0
+        z_max = self.height * 1.5
+        return (
+            torch.tensor([-r, -r, z_min], device=self.attrs.device),
+            torch.tensor([r, r, z_max], device=self.attrs.device)
+        )
+
 
 class CapsuleNode(PrimitiveNode):
     """Capsule SDF - cylinder with hemispherical caps, aligned with Z axis."""
@@ -127,7 +177,6 @@ class CapsuleNode(PrimitiveNode):
         super().__init__(color, metallic, roughness)
         self.radius = radius
         self.half_height = height / 2.0
-        # print(f"    💊 CapsuleNode: radius={radius}, height={height}", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Clamp Z to line segment (Z-axis aligned)
@@ -138,6 +187,15 @@ class CapsuleNode(PrimitiveNode):
         dist = torch.norm(x - p, dim=1) - self.radius
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        r = self.radius
+        h = self.half_height
+        # Capsule extends from -h to h in Z, plus radius caps
+        return (
+            torch.tensor([-r, -r, -h - r], device=self.attrs.device),
+            torch.tensor([r, r, h + r], device=self.attrs.device)
+        )
+
 
 class PlaneNode(PrimitiveNode):
     def __init__(self, normal: List[float], distance: float, color: List[float] = None, metallic: float = 0.0, roughness: float = 0.5):
@@ -145,16 +203,23 @@ class PlaneNode(PrimitiveNode):
         n = torch.tensor(normal, dtype=torch.float32)
         self.register_buffer('n', torch.nn.functional.normalize(n, dim=0))
         self.distance = distance
-        # print(f"    ✈️ PlaneNode", flush=True)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         dist = torch.matmul(x, self.n) + self.distance
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Infinite. Return large box.
+        inf = 1000.0
+        return (
+            torch.tensor([-inf, -inf, -inf], device=self.attrs.device),
+            torch.tensor([inf, inf, inf], device=self.attrs.device)
+        )
+
 
 class WedgeNode(PrimitiveNode):
     """Wedge/ramp SDF — box intersected with a diagonal cutting plane.
-
+    
     Creates a triangular prism (wedge) by slicing a box along a diagonal.
     ``taper_axis`` shrinks from full-width to zero across ``taper_dir``.
 
@@ -198,9 +263,16 @@ class WedgeNode(PrimitiveNode):
         allowed = size_tap * (1.0 - t)
         plane_dist = torch.abs(x[:, self.taper_idx]) - allowed
 
-        # 3. Intersection of box and half-space
-        dist = torch.max(box_dist, plane_dist)
+        # 3. Smooth intersection of box and half-space (avoids gradient discontinuity at diagonal)
+        #    Sharp max(box, plane) causes jagged artifacts; smooth_intersect gives C1 continuity.
+        k = 0.02
+        h = torch.clamp(0.5 - 0.5 * (plane_dist - box_dist) / (k + 1e-8), 0.0, 1.0)
+        dist = torch.lerp(plane_dist, box_dist, h) + k * h * (1.0 - h)
         return self._return_with_attributes(dist)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Bounded by the box
+        return (-self.b, self.b)
 
 
 class RevolutionNode(nn.Module):
@@ -228,10 +300,79 @@ class RevolutionNode(nn.Module):
         p3d[:, 1] = p2d[:, 1]
         return self.child(p3d)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Assume child is 2D shape defined in XY (or first 2 axes of 3D)
+        if hasattr(self.child, "compute_bounds"):
+            c_min, c_max = self.child.compute_bounds()
+        else:
+            c_min = torch.tensor([-1.0, -1.0, -1.0])
+            c_max = torch.tensor([1.0, 1.0, 1.0])
+        
+        # Child 2D bounds:
+        # x (radial) -> expand by offset
+        # y (axial) -> keep
+        
+        # Taking "radial" bounds from child's X
+        r_min, r_max = c_min[0], c_max[0]
+        # Correct radial bounds including negative side of revolution
+        # If child extends from r_min to r_max, and we offset by O:
+        # The swept profile goes from (r_min+O) to (r_max+O).
+        # Since it revolves, the max radius is max(abs(r_min+O), abs(r_max+O))
+        max_rad = max(abs(r_min + self.offset), abs(r_max + self.offset))
+        
+        # Axial bounds from child's Y
+        h_min, h_max = c_min[1], c_max[1]
+        
+        device = c_min.device
+        if self.axis == "y":
+            # x, z are radial. y is axial.
+            return (
+                torch.tensor([-max_rad, h_min, -max_rad], device=device),
+                torch.tensor([max_rad, h_max, max_rad], device=device)
+            )
+        elif self.axis == "x":
+            # y, z are radial. x is axial.
+            # Using child coords: x->radial, y->axial
+            # So child Y maps to world X.
+            return (
+                torch.tensor([h_min, -max_rad, -max_rad], device=device),
+                torch.tensor([h_max, max_rad, max_rad], device=device)
+            )
+        else: # z
+            # x, y are radial. z is axial.
+            return (
+                torch.tensor([-max_rad, -max_rad, h_min], device=device),
+                torch.tensor([max_rad, max_rad, h_max], device=device)
+            )
+
 
 # =============================================================================
 # CSG Operations
 # =============================================================================
+
+def _union_bounds(nodes):
+    if not nodes:
+        return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+    
+    mins, maxs = [], []
+    for n in nodes:
+        if hasattr(n, "compute_bounds"):
+            b_min, b_max = n.compute_bounds()
+            mins.append(b_min)
+            maxs.append(b_max)
+    
+    if not mins:
+        return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+        
+    # Stack and find extents
+    all_mins = torch.stack(mins)
+    all_maxs = torch.stack(maxs)
+    
+    return (
+        torch.min(all_mins, dim=0)[0],
+        torch.max(all_maxs, dim=0)[0]
+    )
+
 
 class UnionNode(nn.Module):
     """Boolean union: min(d1, d2). Attributes from closest child."""
@@ -249,6 +390,9 @@ class UnionNode(nn.Module):
         selected = torch.gather(attrs, 1, s_indices).squeeze(1)
         return min_vals, selected
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _union_bounds(self.child_nodes)
+
 
 class SubtractNode(nn.Module):
     """Boolean subtract: max(d1, -d2). Color from the first child."""
@@ -262,6 +406,14 @@ class SubtractNode(nn.Module):
         d1, c1 = self.child_nodes[0](x)
         d2, _c2 = self.child_nodes[1](x)
         return torch.max(d1, -d2), c1
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self.child_nodes:
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+        # Bounded by Positive shape (first child)
+        if hasattr(self.child_nodes[0], "compute_bounds"):
+            return self.child_nodes[0].compute_bounds()
+        return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
 
 
 class IntersectNode(nn.Module):
@@ -280,9 +432,30 @@ class IntersectNode(nn.Module):
         attrs = torch.where(mask, a1, a2)
         return dist, attrs
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self.child_nodes:
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+        
+        # Intersection of bounds
+        mins, maxs = [], []
+        for n in self.child_nodes:
+            if hasattr(n, "compute_bounds"):
+                b_min, b_max = n.compute_bounds()
+                mins.append(b_min)
+                maxs.append(b_max)
+        
+        if not mins:
+             return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+
+        # Max of mins, Min of maxs
+        return (
+            torch.max(torch.stack(mins), dim=0)[0],
+            torch.min(torch.stack(maxs), dim=0)[0]
+        )
+
 
 class SmoothUnionNode(nn.Module):
-    """Smooth union: IQ polynomial smooth min with attribute blending."""
+    """Smooth union: IQ polynomial smooth min. Attributes from closest child (per-node materials)."""
     def __init__(self, children: List[nn.Module], k: float = 0.5):
         super().__init__()
         self.child_nodes = nn.ModuleList(children)
@@ -296,8 +469,15 @@ class SmoothUnionNode(nn.Module):
         k = self.k
         h = torch.clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0)
         mix_dist = torch.lerp(d2, d1, h) - k * h * (1.0 - h)
-        mix_attrs = torch.lerp(a2, a1, h.unsqueeze(1))
+        closer_first = (d1 <= d2).unsqueeze(1).expand_as(a1)
+        mix_attrs = torch.where(closer_first, a1, a2)
         return mix_dist, mix_attrs
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Union + padding k
+        min_b, max_b = _union_bounds(self.child_nodes)
+        pad = self.k
+        return (min_b - pad, max_b + pad)
 
 
 class SmoothSubtractNode(nn.Module):
@@ -317,9 +497,18 @@ class SmoothSubtractNode(nn.Module):
         mix_dist = torch.lerp(d1, -d2, h) + k * h * (1.0 - h)
         return mix_dist, c1
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Positive shape + padding k
+        if not self.child_nodes:
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+        if hasattr(self.child_nodes[0], "compute_bounds"):
+            b_min, b_max = self.child_nodes[0].compute_bounds()
+            return (b_min - self.k, b_max + self.k)
+        return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+
 
 class SmoothIntersectNode(nn.Module):
-    """Smooth intersect: IQ filleted convex edges. Attributes blended."""
+    """Smooth intersect: IQ filleted convex edges. Attributes from dominating child (per-node materials)."""
     def __init__(self, children: List[nn.Module], k: float = 0.5):
         super().__init__()
         self.child_nodes = nn.ModuleList(children)
@@ -333,8 +522,34 @@ class SmoothIntersectNode(nn.Module):
         k = self.k
         h = torch.clamp(0.5 - 0.5 * (d2 - d1) / k, 0.0, 1.0)
         mix_dist = torch.lerp(d2, d1, h) + k * h * (1.0 - h)
-        mix_attrs = torch.lerp(a2, a1, h.unsqueeze(1))
+        # At intersection surface, take attrs from child with larger d (dominant interior)
+        dominant_first = (d1 >= d2).unsqueeze(1).expand_as(a1)
+        mix_attrs = torch.where(dominant_first, a1, a2)
         return mix_dist, mix_attrs
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Intersection - but smoothing might expand?
+        # Safe to just use intersection of padded?
+        # Actually min(d1,d2) - k ... 
+        # Smooth intersection is approx max(d1, d2) + ...
+        # If we take intersection of bounds, we are safe.
+        # Maybe pad by k just in case.
+        
+        mins, maxs = [], []
+        for n in self.child_nodes:
+            if hasattr(n, "compute_bounds"):
+                b_min, b_max = n.compute_bounds()
+                mins.append(b_min)
+                maxs.append(b_max)
+        
+        if not mins:
+             return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+
+        b_min = torch.max(torch.stack(mins), dim=0)[0]
+        b_max = torch.min(torch.stack(maxs), dim=0)[0]
+        
+        pad = self.k
+        return (b_min - pad, b_max + pad)
 
 
 # =============================================================================
@@ -388,6 +603,14 @@ class MandelbulbNode(PrimitiveNode):
         dist = 0.5 * torch.log(r + 1e-8) * r / (dr + 1e-8) * self.scale
         return self._return_with_attributes(dist)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Mandelbulb is roughly radius 1.2 * scale
+        r = 1.5 * self.scale
+        return (
+            torch.tensor([-r, -r, -r], device=self.attrs.device),
+            torch.tensor([r, r, r], device=self.attrs.device)
+        )
+
 
 class MengerSpongeNode(PrimitiveNode):
     """Menger Sponge fractal SDF - recursive cross subtraction. Vectorized."""
@@ -419,6 +642,14 @@ class MengerSpongeNode(PrimitiveNode):
             dist = torch.max(dist, c)
 
         return self._return_with_attributes(dist * self.scale)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Unit box [-1, 1] scaled
+        s = self.scale
+        return (
+            torch.tensor([-s, -s, -s], device=self.attrs.device),
+            torch.tensor([s, s, s], device=self.attrs.device)
+        )
 
 
 class JuliaSetNode(PrimitiveNode):
@@ -459,3 +690,11 @@ class JuliaSetNode(PrimitiveNode):
         r = torch.norm(z, dim=1)
         dist = 0.5 * r * torch.log(r + 1e-8) / (dz + 1e-8) * self.scale
         return self._return_with_attributes(dist)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Approximate bounds for Julia set (escape radius 2.0 approx)
+        r = 2.0 * self.scale
+        return (
+            torch.tensor([-r, -r, -r], device=self.attrs.device),
+            torch.tensor([r, r, r], device=self.attrs.device)
+        )

@@ -1,35 +1,129 @@
 <div class="editor-header">
     <h3>Properties: {{ card_name }}</h3>
+    {% if has_dna %}
+    <button type="button" class="btn-sm btn-accent" hx-post="/api/assets/partials/recompile/{{ card_id }}"
+        hx-target="#status-{{ card_id }}" hx-swap="outerHTML">
+        Recompile
+    </button>
+    {% else %}
+    <span class="save-status error">No DNA</span>
+    {% endif %}
     <p class="card-id">ID: {{ card_id }}</p>
 </div>
 
-<form hx-post="/api/assets/partials/property/{{ card_id }}" hx-target="this" hx-swap="outerHTML" class="property-list">
-    {% for group in property_groups %}
-    <div class="property-group">
-        <h3>{{ group.name }}</h3>
-        {% for prop in group.properties %}
-        <div class="field">
-            <label for="{{ card_id }}-{{ prop.name }}">{{ prop.label }}</label>
-            {% if prop.type == 'number' %}
-            <input type="number" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}"
-                min="{{ prop.min }}" max="{{ prop.max }}" hx-post="/api/assets/partials/property/{{ card_id }}"
-                hx-trigger="change delay:500ms" hx-target="closest form">
-            {% elif prop.type == 'range' %}
-            <input type="range" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}"
-                min="{{ prop.min }}" max="{{ prop.max }}" step="0.01"
-                hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="change delay:500ms"
-                hx-target="closest form">
+<!-- Main Script for Editors (Loaded in index.html) -->
+
+<div class="accordion-container">
+    <!-- Accordion Item 1: Settings -->
+    <div class="accordion-item active">
+        <div class="accordion-header">
+            <span>Settings</span>
+            <span class="caret">▼</span>
+        </div>
+        <div class="accordion-content">
+            <form hx-post="/api/assets/partials/property/{{ card_id }}" hx-target="this" hx-swap="outerHTML"
+                class="property-list">
+                {% for group in property_groups %}
+                <div class="property-group">
+                    <h3>{{ group.name }}</h3>
+                    {% for prop in group.properties %}
+                    <div class="field">
+                        <label for="{{ card_id }}-{{ prop.name }}">{{ prop.label }}</label>
+                        {% if prop.type == 'number' %}
+                        <input type="number" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}"
+                            value="{{ prop.value }}" min="{{ prop.min }}" max="{{ prop.max }}"
+                            hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="change delay:500ms"
+                            hx-target="closest form">
+                        {% elif prop.type == 'range' %}
+                        <input type="range" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}"
+                            value="{{ prop.value }}" min="{{ prop.min }}" max="{{ prop.max }}" step="0.01"
+                            hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="change delay:500ms"
+                            hx-target="closest form">
+                        {% elif prop.type == 'select' %}
+                        <select id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}"
+                            hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="change"
+                            hx-target="closest form" hx-swap="outerHTML">
+                            {% for opt in prop.options %}
+                            <option value="{{ opt.value }}" {% if opt.value==prop.value %}selected{% endif %}>{{
+                                opt.label }}</option>
+                            {% endfor %}
+                        </select>
+                        {% else %}
+                        <input type="text" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}"
+                            value="{{ prop.value }}" {% if prop.readonly %}readonly{% endif %}
+                            hx-post="/api/assets/partials/property/{{ card_id }}" hx-trigger="keyup changed delay:1s"
+                            hx-target="closest form">
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+                <div id="status-{{ card_id }}" class="save-status">Ready</div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Accordion Item 2: DNA Structure -->
+    <div class="accordion-item">
+        <div class="accordion-header">
+            <span>DNA Structure</span>
+            <span class="caret">▼</span>
+        </div>
+        <div class="accordion-content">
+            {% if has_dna %}
+            <div id="dna-editor-{{ card_id }}" class="dna-editor-root">
+                <div class="tree-content">Loading...</div>
+                <div class="editor-actions" style="margin-top: 16px; text-align: right;">
+                    <button id="save-dna-{{ card_id }}" class="nav-btn active">Save DNA</button>
+                </div>
+            </div>
+            <script>
+                (function () {
+                    const root = document.getElementById('dna-editor-{{ card_id }}');
+                    const treeContainer = root.querySelector('.tree-content');
+                    const saveBtn = document.getElementById('save-dna-{{ card_id }}');
+
+                    // Raw DNA data injection
+                    const dnaData = {{ dna_json | safe
+                }};
+
+                // Render interactive tree
+                window.ForgeEditors.renderDNA(dnaData, treeContainer, () => {
+                    saveBtn.innerText = "Save DNA *";
+                });
+
+                // Save Handler
+                saveBtn.addEventListener('click', () => {
+                    saveBtn.innerText = "Saving...";
+                    fetch('/api/assets/partials/update_dna/{{ card_id }}', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(dnaData)
+                    })
+                        .then(res => res.json())
+                        .then(data => {
+                            saveBtn.innerText = "Saved";
+                            setTimeout(() => { saveBtn.innerText = "Save DNA"; }, 2000);
+                            // Trigger recompile if returned status suggests
+                            if (data.status === 'ok') {
+                                // optional: trigger htmx recompile or toast
+                            }
+                        })
+                        .catch(err => {
+                            console.error(err);
+                            saveBtn.innerText = "Error";
+                        });
+                });
+                }) ();
+            </script>
             {% else %}
-            <input type="text" id="{{ card_id }}-{{ prop.name }}" name="{{ prop.name }}" value="{{ prop.value }}" {% if
-                prop.readonly %}readonly{% endif %} hx-post="/api/assets/partials/property/{{ card_id }}"
-                hx-trigger="keyup changed delay:1s" hx-target="closest form">
+            <div class="empty-state">No DNA present for this asset.</div>
             {% endif %}
         </div>
-        {% endfor %}
     </div>
-    {% endfor %}
+</div>
 
-    <div id="status-{{ card_id }}" class="save-status">
-        Ready
-    </div>
-</form>
+<script>
+    // Initialize editors logic (accordion global bindings)
+    window.ForgeEditors.init();
+</script>

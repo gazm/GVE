@@ -203,6 +203,21 @@ window.addToChain = async function (assetId) {
 // Alias for add to chain
 window.addToProject = window.addToChain;
 
+// Select an asset in the tree (UI highlight) and ensure editor is visible
+window.selectCard = function (assetId) {
+    // Remove active class from all items
+    document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active'));
+
+    // Add active class to selected item
+    const item = document.querySelector(`.tree-item[data-asset-id="${assetId}"]`);
+    if (item) item.classList.add('active');
+
+    // Ensure we are on the asset editor page
+    showPage('asset-editor');
+
+    logOutput(`Selected asset ${assetId}`, 'info');
+};
+
 window.switchToAssetEditor = function (assetId) {
     if (assetId) {
         window.addToChain(assetId);
@@ -304,7 +319,7 @@ if (typeof window.logOutput !== 'function') {
     };
 }
 if (typeof window.clearOutput !== 'function') {
-    window.clearOutput = function () {};
+    window.clearOutput = function () { };
 }
 
 // Utility: debounce

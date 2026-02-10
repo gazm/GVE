@@ -1,30 +1,40 @@
 """
-Material Librarian - Full material specification registry.
+Material Librarian – material specification registry.
 
-Loads all materials from docs/data/material-database.md with physical,
-audio, and visual (PBR) properties. Single source of truth for both
-the compiler pipeline and AI RAG context.
+Single source of truth for compiler pipeline and AI RAG context. Aligns with
+docs/data/material-database.md (visual, audio, and physical specs).
 
-Base colors are stored as sRGB [0-1] matching the hex values in the
-material database doc. The compiler converts to linear RGB -> Oklab.
+Base colors are sRGB [0-1] matching the doc hex values; the compiler
+converts to linear RGB then Oklab for rendering.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Tuple
 
 from generated.types import MaterialSpec, AudioProperties, ColorMode
 
 
 def _hex_to_srgb(hex_color: str) -> list[float]:
-    """Convert '#RRGGBB' hex string to sRGB [0-1] float list."""
+    """Convert '#RRGGBB' hex to sRGB [0-1] float list (length 3). Precise: R,G,B = int(hex,16)/255."""
     h = hex_color.lstrip("#")
+    if len(h) != 6:
+        raise ValueError(f"Expected 6 hex digits, got {hex_color!r}")
     return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
 
 
 # =============================================================================
-# Material Database (from docs/data/material-database.md v1.1)
+# Material Database (docs/data/material-database.md v1.1)
+# Cross-reference: each base_color hex must match the doc "Base Color (sRGB)".
 # =============================================================================
 
-_MATERIAL_DB: Dict[str, MaterialSpec] = {
+# Doc hex reference (material_id -> hex) for cross-check:
+# ASTM_A36 #B0B0B0 | AMS_4911 #D3D3D3 | ASTM_B152 #B87333 | ASTM_B265_Grade5 #C0C0C0
+# ASTM_B127 #D4AF37 | ASTM_C33 #808080 | ASTM_C568 #E8D5B7 | ASTM_C503 #F5F5DC
+# WOOD_OAK #C19A6B | WOOD_PINE #E3C194 | WOOD_MAPLE #F4E7D3 | ASTM_D4181 #E0E0E0
+# ASTM_D638 #F0F0F0 | ASTM_D7031 #1A1A1A | ASTM_C1036 #E8F4F8 | ASTM_C373 #FFFFFF
+# ASTM_D2000 #2B2B2B | ASTM_D412 #F5F5DC | TEXTILE_COTTON #F5F5DC | TEXTILE_NYLON #EBEBEB
+# KEVLAR_49 #FFD700 | BALLISTIC_GEL #FFE4B5
+
+_MATERIAL_DB: dict[str, MaterialSpec] = {
     # ── Metals ───────────────────────────────────────────────────────────
     "ASTM_A36": MaterialSpec(
         name="Structural Steel",
@@ -256,10 +266,10 @@ _MATERIAL_DB: Dict[str, MaterialSpec] = {
 }
 
 # =============================================================================
-# AI-friendly aliases (RAG names -> canonical ASTM IDs)
+# AI-friendly aliases (RAG names -> canonical IDs)
 # =============================================================================
 
-_ALIASES: Dict[str, str] = {
+_ALIASES: dict[str, str] = {
     "METAL_STEEL": "ASTM_A36",
     "METAL_ALUMINUM": "AMS_4911",
     "METAL_COPPER": "ASTM_B152",
@@ -281,7 +291,7 @@ _ALIASES: Dict[str, str] = {
 }
 
 # Category grouping for RAG display
-_CATEGORIES: Dict[str, list[str]] = {
+_CATEGORIES: dict[str, list[str]] = {
     "metals": ["ASTM_A36", "AMS_4911", "ASTM_B152", "ASTM_B265_Grade5", "ASTM_B127"],
     "stone": ["ASTM_C33", "ASTM_C568", "ASTM_C503"],
     "wood": ["WOOD_OAK", "WOOD_PINE", "WOOD_MAPLE"],
@@ -298,29 +308,29 @@ _CATEGORIES: Dict[str, list[str]] = {
 # =============================================================================
 
 class MaterialLibrarian:
-    """Read-only material specification lookup with alias support."""
+    """Read-only material lookup with alias resolution and RAG registry."""
 
     def __init__(self) -> None:
-        self._materials: Dict[str, MaterialSpec] = dict(_MATERIAL_DB)
-        self._aliases: Dict[str, str] = dict(_ALIASES)
+        self._materials: dict[str, MaterialSpec] = dict(_MATERIAL_DB)
+        self._aliases: dict[str, str] = dict(_ALIASES)
 
     def _resolve_id(self, spec_id: str) -> str:
-        """Resolve aliases to canonical ID."""
+        """Resolve alias to canonical material ID."""
         return self._aliases.get(spec_id, spec_id)
 
     def get_material(self, spec_id: str) -> MaterialSpec:
-        """Get material spec by canonical ID or alias."""
+        """Return material spec by ID or alias. Raises KeyError if unknown."""
         canonical = self._resolve_id(spec_id)
         if canonical not in self._materials:
             raise KeyError(f"Material spec not found: {spec_id} (resolved: {canonical})")
         return self._materials[canonical]
 
     def get_audio_properties(self, spec_id: str) -> AudioProperties:
-        """Get audio properties for a material."""
+        """Return audio properties for a material."""
         return self.get_material(spec_id).audio_properties
 
     def resolve_impact_pair(self, spec_a: str, spec_b: str) -> Tuple[float, float]:
-        """Calculate (combined_resonance, impact_hardness) for two materials."""
+        """Return (combined_resonance, impact_hardness) for two materials."""
         mat_a = self.get_material(spec_a)
         mat_b = self.get_material(spec_b)
         avg_resonance = (
@@ -328,24 +338,23 @@ class MaterialLibrarian:
         ) / 2.0
         return (avg_resonance, 1.0)  # Hardness placeholder
 
-    def list_materials(self) -> List[str]:
-        """List all canonical material IDs."""
+    def list_materials(self) -> list[str]:
+        """Return all canonical material IDs."""
         return list(self._materials.keys())
 
-    def list_aliases(self) -> Dict[str, str]:
+    def list_aliases(self) -> dict[str, str]:
         """Return alias -> canonical ID mapping."""
         return dict(self._aliases)
 
-    def get_registry_for_rag(self) -> Dict[str, Dict[str, Dict[str, object]]]:
+    def get_registry_for_rag(self) -> dict[str, dict[str, dict[str, object]]]:
         """
-        Build grouped material registry for AI RAG context injection.
+        Build category-grouped material registry for AI RAG (Artist prompt).
 
-        Returns a category-grouped dict with visual properties the AI
-        needs when selecting materials for DNA generation.
+        Returns category -> { mat_id -> { name, color (hex), metallic, roughness } }.
         """
-        registry: Dict[str, Dict[str, Dict[str, object]]] = {}
+        registry: dict[str, dict[str, dict[str, object]]] = {}
         for category, ids in _CATEGORIES.items():
-            group: Dict[str, Dict[str, object]] = {}
+            group: dict[str, dict[str, object]] = {}
             for mat_id in ids:
                 mat = self._materials[mat_id]
                 # Convert sRGB floats back to hex for AI readability
@@ -362,7 +371,7 @@ class MaterialLibrarian:
 
 
 # =============================================================================
-# Module-level convenience functions
+# Module-level API (single shared instance)
 # =============================================================================
 
 _librarian = MaterialLibrarian()

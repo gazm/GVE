@@ -55,7 +55,7 @@ pub fn splat_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Uniforms {
     pub mvp: [[f32; 4]; 4],
-    pub view: [[f32; 4]; 4],         // Added specific view matrix for billboarding
+    pub view_inv: [[f32; 4]; 4],     // Inverse view matrix for billboarding (camera->world)
     pub camera_pos: [f32; 3],        // Added camera pos
     pub viewport: [f32; 2],          // Added viewport dims
     pub _pad: [u32; 3],              // Alignment
@@ -128,7 +128,7 @@ pub struct LoadedSplat {
     pub instance_count: u32,
 }
 
-/// Loaded dense volume for raymarching
+/// Loaded dense volume for raymarching (optionally with triplanar textures for color)
 pub struct LoadedVolume {
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
@@ -137,19 +137,33 @@ pub struct LoadedVolume {
     pub dims: [u32; 3],
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
+    /// When true, volume shader samples triplanar textures for base_color instead of normals
+    pub has_triplanar: bool,
+    pub triplanar_bounds_min: [f32; 3],
+    pub triplanar_bounds_max: [f32; 3],
 }
 
-/// Volume raymarching uniforms (96 bytes)
+/// WGSL expects uniform block size rounded to 16 bytes (224). Rust repr(C) size may differ; use this for buffer allocation.
+pub const VOLUME_UNIFORM_BUFFER_SIZE: u64 = 224;
+
+/// Volume raymarching uniforms (includes triplanar flag and bounds when used).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct VolumeUniforms {
     pub inv_view_proj: [[f32; 4]; 4],  // 64 bytes
-    pub camera_pos: [f32; 3],           // 12 bytes
-    pub _pad0: f32,                     // 4 bytes (alignment)
-    pub bounds_min: [f32; 3],           // 12 bytes
+    pub camera_pos: [f32; 3],          // 12 bytes
+    pub _pad0: f32,                     // 4 bytes
+    pub bounds_min: [f32; 3],          // 12 bytes
     pub _pad1: f32,                     // 4 bytes
     pub bounds_max: [f32; 3],           // 12 bytes
     pub _pad2: f32,                     // 4 bytes
+    pub view_proj: [[f32; 4]; 4],      // 64 bytes
+    pub use_triplanar: u32,             // 4 bytes
+    pub triplanar_bounds_min: [f32; 3], // 12 bytes
+    pub _pad3: f32,                     // 4 bytes
+    pub triplanar_bounds_max: [f32; 3], // 12 bytes
+    pub _pad4: f32,                     // 4 bytes
+    pub _pad_end: [f32; 3],             // 12 bytes trailing padding -> total 224
 }
 
 // ============================================================================
@@ -162,3 +176,45 @@ pub struct RenderConfig {
     pub height: u32,
     pub surface_format: wgpu::TextureFormat,
 }
+
+// ============================================================================
+// ViewMode
+// ============================================================================
+
+/// Rendering viewmode for SDF + Splat hybrid rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// SDF raymarching only (normal-based coloring)
+    Sdf,
+    /// Gaussian splats only
+    Splat,
+    /// SDF + splats rendered on top (depth-tested overlay)
+    #[default]
+    SdfOverlay,
+}
+
+impl ViewMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "sdf" => ViewMode::Sdf,
+            "splat" => ViewMode::Splat,
+            "sdf_overlay" => ViewMode::SdfOverlay,
+            "sdf_textured" => ViewMode::SdfOverlay,
+            _ => ViewMode::SdfOverlay,
+        }
+    }
+}
+
+/// Debug state snapshot for UI overlay
+#[derive(Debug, Clone)]
+pub struct DebugState {
+    pub view_mode: String,
+    pub active_sdf: Option<u64>,
+    pub active_splat: Option<u64>,
+    pub active_volume: Option<u64>,
+    pub camera_pos: [f32; 3],
+    pub camera_yaw: f32,
+    pub camera_pitch: f32,
+}
+
+

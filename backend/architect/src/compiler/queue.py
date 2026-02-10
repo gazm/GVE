@@ -32,6 +32,7 @@ async def _process_job(job_id: str) -> None:
             asset_id=job["asset_id"],
             priority=job.get("priority", CompilePriority.NORMAL),
             force_recompile=job.get("force_recompile", False),
+            options=job.get("options"),
         )
         
         print(f"[*] Running compile_asset for {job['asset_id']}...", flush=True)
@@ -58,23 +59,27 @@ async def _process_job(job_id: str) -> None:
 async def enqueue_compile(
     asset_id: str | ObjectId, 
     priority: CompilePriority = CompilePriority.NORMAL,
-    force_recompile: bool = False
+    force_recompile: bool = False,
+    compile_options: Optional[dict] = None
 ) -> str:
     """
     Queue an asset for compilation.
-    Returns a job ID.
+    Returns a job ID. If this asset already has a queued or running job, returns that job_id
+    instead of starting a second one (avoids duplicate compiles from e.g. property save + recompile).
     """
+    aid = str(asset_id)
+    for jid, job in list(_jobs.items()):
+        if job.get("status") in ("queued", "running") and job.get("asset_id") == aid:
+            return jid
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {
-        "asset_id": str(asset_id),
+        "asset_id": aid,
         "status": "queued",
         "priority": priority,
         "force_recompile": force_recompile,
+        "options": compile_options,
     }
-    
-    # Fire and forget - run compilation in background
     asyncio.create_task(_process_job(job_id))
-    
     return job_id
 
 async def get_compile_status(job_id: str) -> dict:

@@ -7,6 +7,7 @@ Output schemas for the Matter generation pipeline stages.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -67,20 +68,26 @@ class PrimitiveParams(BaseModel):
 
 
 class Transform(BaseModel):
-    """Transform for positioning a node in 3D space."""
+    """Transform for positioning a node in 3D space.
+
+    rot accepts either Euler degrees (3 elements) or quaternion (4 elements):
+    - Euler: [x_deg, y_deg, z_deg] — compiler converts to quaternion (XYZ order).
+    - Quaternion: [x, y, z, w] — used as-is.
+    """
     pos: list[float] = [0.0, 0.0, 0.0]              # Position [x, y, z]
-    rot: list[float] = [0.0, 0.0, 0.0, 1.0]         # Rotation quaternion [x, y, z, w]
+    rot: list[float] = [0.0, 0.0, 0.0, 1.0]         # Euler [x_deg,y_deg,z_deg] or quat [x,y,z,w]
     scale: list[float] | None = None                 # Optional scale [x, y, z]
 
 
 class Modifier(BaseModel):
     """
     Domain modifier that warps space before SDF evaluation.
-    
+
     Available modifier types:
     - twist: Rotate points around axis proportional to position. {"type": "twist", "axis": "y", "rate": 1.0}
     - bend: Bend the shape around an axis. {"type": "bend", "axis": "x", "angle": 0.5}
     - taper: Scale cross-section along axis. {"type": "taper", "axis": "y", "scale_min": 0.5, "scale_max": 1.0}
+      Note: taper is supported for JIT/splat; not yet in engine bytecode (serializer skips it).
     - mirror: Mirror across axis plane for symmetry. {"type": "mirror", "axis": "x"}
     - round: Bevel/round edges. {"type": "round", "radius": 0.02}
     - voronoi: 3D cellular pattern. {"type": "voronoi", "cell_size": 0.2, "wall_thickness": 0.02, "mode": "subtract"}
@@ -136,8 +143,8 @@ class SDFNode(BaseModel):
     transform: Transform | dict[str, Any] | None = Field(None, description="Position/rotation/scale")
     lod_cutoff: int = Field(0, description="LOD level at which this node disappears (0=always visible)")
     modifiers: list[dict[str, Any]] | None = Field(
-        None, 
-        description="Domain modifiers applied in order: twist, bend, taper, mirror, round, voronoi"
+        None,
+        description="Domain modifiers applied in order: twist, bend, taper, mirror, round, voronoi. taper is JIT/splat only; engine bytecode skips it.",
     )
     procedural_texture: dict[str, Any] | None = Field(
         None,
@@ -247,10 +254,15 @@ class MaterialConfig(BaseModel):
     """Material configuration for a node.
 
     Note: ``texture_modifiers`` (edge_wear, cavity_grime, rust_amount) are
-    captured here for intent but are **not yet consumed** by the compiler.
-    They will be wired up as SDF post-processing in a future update.
+    consumed by the compiler as a compile-time attribute modifier pass.
+    Optional ``finish_id`` applies named visual overrides (e.g. black_oxide)
+    on top of the material; explicit base_color/roughness/metallic override finish.
     """
     material_id: str
+    finish_id: str | None = Field(
+        None,
+        description="Named finish override (e.g. black_oxide). Applied on top of material; explicit base_color/roughness/metallic override finish.",
+    )
     color_mode: str = Field(
         "oklab",
         description="Vestigial -- compiler always produces Oklab. Retained for future use.",
@@ -267,18 +279,41 @@ class MaterialConfig(BaseModel):
     )
     texture_modifiers: dict[str, Any] | None = Field(
         None,
-        description="Aspirational weathering (not yet consumed by compiler): edge_wear, cavity_grime, rust_amount",
+        description="Per-node weathering: edge_wear, cavity_grime, rust_amount",
     )
-    
+
+    @field_validator('procedural_texture', mode='before')
+    @classmethod
+    def coerce_procedural_texture_to_dict(cls, v: Any) -> dict[str, Any] | None:
+        """Parse JSON string to dict when LLM returns nested object as string."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return None
+
     @field_validator('texture_modifiers', mode='before')
     @classmethod
-    def convert_list_to_dict(cls, v):
+    def coerce_texture_modifiers_to_dict(cls, v: Any) -> dict[str, Any] | None:
         """
-        Convert flat list ['key1', val1, 'key2', val2] to dict.
-        
-        LLMs sometimes output texture_modifiers as a flat list instead of dict.
-        This validator auto-converts to the expected format.
+        Coerce to dict when LLM outputs JSON string or flat list.
+        LLMs sometimes output texture_modifiers as a JSON string or flat list
+        instead of dict; this validator normalizes to the expected format.
         """
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
         if isinstance(v, list):
             result = {}
             for i in range(0, len(v) - 1, 2):

@@ -10,6 +10,7 @@ from .materials import (
     resolve_impact_pair, list_materials,
     get_registry_for_rag,
 )
+from .finishes import get_finish, get_finish_registry_for_rag
 from .cache import (
     resolve_cache_path, check_cache_validity, 
     CacheStatus,
@@ -27,6 +28,8 @@ __all__ = [
     # Materials
     "get_material", "get_audio_properties", "resolve_impact_pair",
     "list_materials", "get_registry_for_rag",
+    # Finishes
+    "get_finish", "get_finish_registry_for_rag",
     # Cache
     "resolve_cache_path", "check_cache_validity", "CacheStatus",
 ]

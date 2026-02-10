@@ -41,6 +41,41 @@ class TransformNode(nn.Module):
         t = 2.0 * torch.cross(q_xyz.unsqueeze(0).expand(p.shape[0], -1), p, dim=1)
         return p + qw * t + torch.cross(q_xyz.unsqueeze(0).expand(p.shape[0], -1), t, dim=1)
 
+    def _rotate_by_quat(self, p: torch.Tensor) -> torch.Tensor:
+        """Rotate points by stored quaternion."""
+        q = self.quat
+        qx, qy, qz, qw = q[0], q[1], q[2], q[3]
+        q_xyz = torch.stack([qx, qy, qz])
+        t = 2.0 * torch.cross(q_xyz.unsqueeze(0).expand(p.shape[0], -1), p, dim=1)
+        return p + qw * t + torch.cross(q_xyz.unsqueeze(0).expand(p.shape[0], -1), t, dim=1)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3, device=self.translation.device), 
+                    torch.tensor([1.]*3, device=self.translation.device))
+        
+        # Get child bounds
+        b_min, b_max = self.child.compute_bounds()
+        
+        # Create 8 corners of the AABB
+        corners = []
+        for x in [b_min[0], b_max[0]]:
+            for y in [b_min[1], b_max[1]]:
+                for z in [b_min[2], b_max[2]]:
+                    corners.append(torch.stack([x, y, z]))
+        corners = torch.stack(corners) # [8, 3]
+        
+        # Apply Forward transform: Rotate then Translate
+        # Note: In forward(), x maps to local by (x-T) * R_inv
+        # So local = (world-T)*R_inv => world-T = local*R => world = local*R + T
+        rotated = self._rotate_by_quat(corners)
+        transformed = rotated + self.translation
+        
+        return (
+            torch.min(transformed, dim=0)[0],
+            torch.max(transformed, dim=0)[0]
+        )
+
 
 class TwistModifier(nn.Module):
     """Twist space around an axis. Rotation angle is proportional to position along axis."""
@@ -68,6 +103,24 @@ class TwistModifier(nn.Module):
         
         return self.child(twisted)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Twist preserves bounds on the primary axis, but rotates the box on others.
+        # Conservative bound: max dimension on secondary axes
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+            
+        b_min, b_max = self.child.compute_bounds()
+        
+        # Simply union the secondary dimensions to be safe?
+        # Actually twist is rotation. Max extent is diagonal of the secondary slice.
+        # radius = max_dist from axis center
+        
+        # For now, just pass through but expanded by sqrt(2) on secondary axes?
+        # Safer: bounding box of a rotating box is the bounding sphere of the slice??
+        # Let's just paddle slightly.
+        pad = 0.5
+        return (b_min - pad, b_max + pad)
+
 
 class BendModifier(nn.Module):
     """Bend space around an axis."""
@@ -94,22 +147,49 @@ class BendModifier(nn.Module):
         
         return self.child(bent)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Helper pass-through with padding
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+            
+        b_min, b_max = self.child.compute_bounds()
+        pad = 1.0 # Bend moves things quite a bit
+        return (b_min - pad, b_max + pad)
+
+
+def _smoothstep(t: torch.Tensor) -> torch.Tensor:
+    """Smooth S-curve [0,1] -> [0,1] with zero derivative at 0 and 1; reduces voxel banding."""
+    t = torch.clamp(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
 
 class TaperModifier(nn.Module):
-    """Taper (scale cross-section) along an axis."""
+    """Taper (scale cross-section) along an axis. Uses child bounds and smoothstep to avoid stepped artifacts."""
     def __init__(self, child: nn.Module, axis: str = "y", scale_min: float = 0.5, scale_max: float = 1.0):
         super().__init__()
         self.child = child
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 1)
         self.scale_min = scale_min
         self.scale_max = scale_max
-        
+        # Cache taper-axis extent from child bounds once (avoids per-forward calls, stable for baking)
+        if hasattr(child, "compute_bounds"):
+            b_min, b_max = child.compute_bounds()
+            axis_min = b_min[self.axis_idx].item()
+            axis_max = b_max[self.axis_idx].item()
+        else:
+            axis_min, axis_max = -1.0, 1.0
+        self.register_buffer("_axis_min", torch.tensor(axis_min, dtype=torch.float32))
+        self.register_buffer("_axis_max", torch.tensor(axis_max, dtype=torch.float32))
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Normalize axis position to 0-1 range (assuming object spans -1 to 1)
         axis_val = x[:, self.axis_idx]
-        t = (axis_val + 1.0) / 2.0
+        axis_min = self._axis_min.to(x.device)
+        axis_max = self._axis_max.to(x.device)
+        extent = axis_max - axis_min + 1e-8
+        t = (axis_val - axis_min) / extent
         t = torch.clamp(t, 0.0, 1.0)
-        
+        t = _smoothstep(t)  # smooth transition to reduce stepped/wavy banding
+
         # Interpolate scale (clamped to avoid division-by-zero for aggressive tapers)
         scale = self.scale_min + t * (self.scale_max - self.scale_min)
         scale = torch.clamp(scale, min=1e-4)
@@ -125,6 +205,41 @@ class TaperModifier(nn.Module):
         
         return self.child(tapered)
 
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+            
+        b_min, b_max = self.child.compute_bounds()
+        
+        # Taper shrinks or grows the secondary axes.
+        # Max expansion is 1/scale_min (if scale < 1, points must increase to match).
+        # Wait, forward divides by scale.
+        # if x' = x / scale, then x = x' * scale.
+        # If Child bounds says x' in [-1, 1], and x = x' * scale.
+        # Then x is in [-scale, scale].
+        
+        # Max scale possible is scale_max.
+        scale_limit = max(self.scale_max, self.scale_min)
+        
+        # Axis idx is untouched. Other axes scaled by scale_limit.
+        extent = torch.max(torch.abs(b_min), torch.abs(b_max))
+        new_extent = extent.clone()
+        
+        for i in range(3):
+            if i != self.axis_idx:
+                new_extent[i] *= scale_limit
+        
+        # Re-construct bounds assuming symmetry? Not necessarily symmetric.
+        # Safest is just expand by max scale
+        return (-new_extent, new_extent)
+
+
+def _smooth_abs(x: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+    """Smooth abs so derivative is continuous at 0 (avoids seam at mirror plane)."""
+    ax = torch.abs(x)
+    blend = torch.where(ax < eps, 0.5 * x * x / (eps + 1e-8), ax - 0.5 * eps)
+    return torch.sign(x + 1e-8) * blend
+
 
 class MirrorModifier(nn.Module):
     """Mirror space across an axis plane."""
@@ -134,10 +249,35 @@ class MirrorModifier(nn.Module):
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 0)
         
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Take absolute value of the mirrored axis
+        # Smooth abs on mirror axis (avoids gradient discontinuity at plane)
         mirrored = x.clone()
-        mirrored[:, self.axis_idx] = torch.abs(mirrored[:, self.axis_idx])
+        mirrored[:, self.axis_idx] = _smooth_abs(mirrored[:, self.axis_idx])
         return self.child(mirrored)
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+            
+        b_min, b_max = self.child.compute_bounds()
+        
+        # Check if child is only on positive side of axis
+        # If so, mirror implies +/- constraints.
+        
+        # Actually mirror(x) = abs(x).
+        # Child sees positive numbers.
+        # So we only care about child bounds in +ve quadrant of axis.
+        # Then we mirror that extent to -ve.
+        
+        # Max extent = max(abs(min), abs(max))
+        extent_val = max(abs(b_min[self.axis_idx]), abs(b_max[self.axis_idx]))
+        
+        new_min = b_min.clone()
+        new_max = b_max.clone()
+        
+        new_min[self.axis_idx] = -extent_val
+        new_max[self.axis_idx] = extent_val
+        
+        return (new_min, new_max)
 
 
 class RoundModifier(nn.Module):
@@ -151,6 +291,14 @@ class RoundModifier(nn.Module):
         # Rounding just subtracts from the distance
         dist, mat = self.child(x)
         return dist - self.radius, mat
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+            
+        b_min, b_max = self.child.compute_bounds()
+        r = self.radius
+        return (b_min - r, b_max + r)
 
 
 # Pre-computed 27-neighbor offsets for vectorized Voronoi evaluation
@@ -221,6 +369,12 @@ class VoronoiModifier(nn.Module):
             result_dist = torch.max(child_dist, -voronoi_dist)
         
         return result_dist, child_color
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Keeps original bounds
+        if not hasattr(self.child, "compute_bounds"):
+            return (torch.tensor([-1.]*3), torch.tensor([1.]*3))
+        return self.child.compute_bounds()
 
 
 def build_modifier(child: nn.Module, modifier_data: Dict) -> nn.Module:

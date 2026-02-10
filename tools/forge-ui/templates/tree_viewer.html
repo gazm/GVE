@@ -32,7 +32,8 @@
                 <li class="tree-item" role="treeitem" data-card-id="{{ slot.asset_id }}"
                     data-asset-id="{{ slot.asset_id }}" data-slot-type="{{ slot.slot_type }}"
                     hx-get="/api/assets/partials/editor/{{ slot.asset_id }}" hx-target="#property-editor"
-                    hx-trigger="click" hx-swap="innerHTML" onclick="selectCard('{{ slot.asset_id }}')">
+                    hx-trigger="click" hx-swap="innerHTML"
+                    onclick="selectCard('{{ slot.asset_id }}'); window.load_asset && window.load_asset('/api/assets/{{ slot.asset_id }}/binary', '{{ slot.asset_id }}')">
                     <span class="tree-icon tree-icon-{{ slot.slot_type }}">{{ slot.slot_type[0]|upper }}</span>
                     <span class="tree-label">{{ slot.name }}</span>
                     <!-- Meta hidden for compactness in nested view, or can stay -->

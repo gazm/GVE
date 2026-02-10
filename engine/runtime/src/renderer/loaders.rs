@@ -64,9 +64,10 @@ pub fn load_geometry_from_binary(
     let volume_size = header.volume_size;
     let splat_data_offset = header.splat_data_offset;
     let splat_count = header.splat_count;
-    
-    log::info!("📄 GVE Header: version={:#x}, vertices={}, shell_offset={}, volume_offset={}, volume_size={}", 
-        version, vertex_count, shell_mesh_offset, volume_data_offset, volume_size);
+    let triplanar_offset = header.triplanar_offset;
+
+    log::info!("📄 GVE Header: version={:#x}, vertices={}, shell_offset={}, volume_offset={}, volume_size={}, triplanar={}", 
+        version, vertex_count, shell_mesh_offset, volume_data_offset, volume_size, triplanar_offset);
 
     let mut result = GeometryLoadResult {
         sdf: None,
@@ -74,8 +75,9 @@ pub fn load_geometry_from_binary(
         splat: None,
         volume: None,
     };
-    
+
     // Parse dense volume (for GPU raymarching) - priority for SDF view
+    // When triplanar_offset > 0, triplanar textures are parsed and bound for SDF surface color
     log::info!("📦 Checking volume: offset={}, size={}", volume_data_offset, volume_size);
     if volume_data_offset > 0 && volume_size > 0 {
         if let Some(vol) = parse_dense_volume(
@@ -84,10 +86,11 @@ pub fn load_geometry_from_binary(
             data,
             volume_data_offset as usize,
             volume_size as usize,
+            triplanar_offset,
             volume_bind_group_layout,
             volume_uniform_buffer,
         ) {
-            log::info!("✅ Loaded dense volume: {}x{}x{}", vol.dims[0], vol.dims[1], vol.dims[2]);
+            log::info!("✅ Loaded dense volume: {}x{}x{} (triplanar: {})", vol.dims[0], vol.dims[1], vol.dims[2], vol.has_triplanar);
             result.volume = Some(vol);
         }
     }
@@ -154,6 +157,101 @@ pub enum GeometryLoadError {
 /// Dense grid header size: dims(12) + bounds_min(12) + bounds_max(12) + uncompressed_size(4) = 40 bytes
 const DENSE_VOLUME_HEADER_SIZE: usize = 40;
 
+/// TRI1 header: magic(4) + resolution(4) + bounds_min(12) + bounds_max(12) = 32 bytes
+const TRI1_HEADER_SIZE: usize = 32;
+const TRI1_MAGIC: &[u8; 4] = b"TRI1";
+
+/// Parse optional triplanar block (TRI1). Returns (xy_view, xz_view, yz_view, bounds_min, bounds_max) or None.
+fn parse_triplanar(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    data: &[u8],
+    offset: usize,
+) -> Option<(
+    wgpu::TextureView,
+    wgpu::TextureView,
+    wgpu::TextureView,
+    [f32; 3],
+    [f32; 3],
+)> {
+    if offset + TRI1_HEADER_SIZE > data.len() {
+        return None;
+    }
+    let tri = &data[offset..];
+    if &tri[0..4] != TRI1_MAGIC {
+        log::warn!("⚠️ Triplanar magic mismatch");
+        return None;
+    }
+    let resolution = u32::from_le_bytes([tri[4], tri[5], tri[6], tri[7]]) as usize;
+    if resolution == 0 || resolution > 2048 {
+        log::warn!("⚠️ Triplanar resolution invalid: {}", resolution);
+        return None;
+    }
+    let bounds_min = [
+        f32::from_le_bytes([tri[8], tri[9], tri[10], tri[11]]),
+        f32::from_le_bytes([tri[12], tri[13], tri[14], tri[15]]),
+        f32::from_le_bytes([tri[16], tri[17], tri[18], tri[19]]),
+    ];
+    let bounds_max = [
+        f32::from_le_bytes([tri[20], tri[21], tri[22], tri[23]]),
+        f32::from_le_bytes([tri[24], tri[25], tri[26], tri[27]]),
+        f32::from_le_bytes([tri[28], tri[29], tri[30], tri[31]]),
+    ];
+    let slice_bytes = resolution * resolution * 4;
+    let total_data = TRI1_HEADER_SIZE + slice_bytes * 3;
+    if offset + total_data > data.len() {
+        log::warn!("⚠️ Triplanar data truncated");
+        return None;
+    }
+    let create_tex = |label: &str, slice: &[u8]| {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: resolution as u32, height: resolution as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let res_u = resolution as u32;
+        queue.write_texture(
+            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            slice,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(res_u * 4), rows_per_image: Some(res_u) },
+            wgpu::Extent3d { width: res_u, height: res_u, depth_or_array_layers: 1 },
+        );
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    let xy = create_tex("Triplanar XY", &tri[TRI1_HEADER_SIZE..TRI1_HEADER_SIZE + slice_bytes]);
+    let xz = create_tex("Triplanar XZ", &tri[TRI1_HEADER_SIZE + slice_bytes..TRI1_HEADER_SIZE + slice_bytes * 2]);
+    let yz = create_tex("Triplanar YZ", &tri[TRI1_HEADER_SIZE + slice_bytes * 2..total_data]);
+    log::info!("✅ Triplanar loaded: {}x{}", resolution, resolution);
+    Some((xy, xz, yz, bounds_min, bounds_max))
+}
+
+/// Create a 1x1 RGBA dummy texture (grey) for unused triplanar bindings
+fn create_dummy_triplanar_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Dummy Triplanar"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let grey: [u8; 4] = [128, 128, 128, 255];
+    queue.write_texture(
+        wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        &grey,
+        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 /// Parse LZ4-compressed dense volume section and create 3D texture for GPU raymarching
 fn parse_dense_volume(
     device: &wgpu::Device,
@@ -161,6 +259,7 @@ fn parse_dense_volume(
     data: &[u8],
     offset: usize,
     size: usize,
+    triplanar_offset: u64,
     bind_group_layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
 ) -> Option<LoadedVolume> {
@@ -299,7 +398,7 @@ fn parse_dense_volume(
     );
     
     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    
+
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("Volume Sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -310,27 +409,58 @@ fn parse_dense_volume(
         mipmap_filter: wgpu::FilterMode::Nearest,
         ..Default::default()
     });
-    
-    // Create bind group
+
+    let triplanar_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Triplanar Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let (tri_xy, tri_xz, tri_yz, tri_bounds_min, tri_bounds_max, has_triplanar) = if triplanar_offset > 0 {
+        if let Some((xy, xz, yz, bmin, bmax)) = parse_triplanar(device, queue, data, triplanar_offset as usize) {
+            let vol_eq = bmin == bounds_min && bmax == bounds_max;
+            log::info!("📐 Triplanar vs volume bounds: tri=([{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}]) vol=([{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}]) match={}",
+                bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2],
+                bounds_min[0], bounds_min[1], bounds_min[2], bounds_max[0], bounds_max[1], bounds_max[2],
+                vol_eq);
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&format!(
+                "📐 Triplanar bounds: [{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}] | Volume: [{:.4},{:.4},{:.4}]..[{:.4},{:.4},{:.4}] | match={}",
+                bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2],
+                bounds_min[0], bounds_min[1], bounds_min[2], bounds_max[0], bounds_max[1], bounds_max[2],
+                vol_eq
+            ).into());
+            (xy, xz, yz, bmin, bmax, true)
+        } else {
+            let d1 = create_dummy_triplanar_texture(device, queue);
+            let d2 = create_dummy_triplanar_texture(device, queue);
+            let d3 = create_dummy_triplanar_texture(device, queue);
+            (d1, d2, d3, bounds_min, bounds_max, false)
+        }
+    } else {
+        let d1 = create_dummy_triplanar_texture(device, queue);
+        let d2 = create_dummy_triplanar_texture(device, queue);
+        let d3 = create_dummy_triplanar_texture(device, queue);
+        (d1, d2, d3, bounds_min, bounds_max, false)
+    };
+
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Volume Bind Group"),
         layout: bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&sampler),
-            },
+            wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&tri_xy) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&tri_xz) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&tri_yz) },
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&triplanar_sampler) },
         ],
     });
-    
+
     Some(LoadedVolume {
         texture,
         texture_view,
@@ -339,6 +469,9 @@ fn parse_dense_volume(
         dims,
         bounds_min,
         bounds_max,
+        has_triplanar,
+        triplanar_bounds_min: tri_bounds_min,
+        triplanar_bounds_max: tri_bounds_max,
     })
 }
 

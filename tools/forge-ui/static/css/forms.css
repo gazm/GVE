@@ -11,26 +11,42 @@
 }
 
 .property-group {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--bg-surface);
     border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 1.25rem;
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 .property-group h3 {
-    font-size: 0.8rem;
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--accent);
-    margin-bottom: 1rem;
-    opacity: 0.8;
+    color: var(--text-secondary);
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.property-group h3::before {
+    content: '';
+    display: block;
+    width: 4px;
+    height: 12px;
+    background: var(--accent);
+    border-radius: 2px;
 }
 
 .field {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    margin-bottom: 1rem;
+    margin-bottom: 1.25rem;
 }
 
 .field:last-child {
@@ -39,36 +55,49 @@
 
 .field label {
     font-size: 0.85rem;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--text-secondary);
+    font-weight: 500;
 }
 
 .field input[type="text"],
-.field input[type="number"] {
-    background: #000;
-    border: 1px solid #333;
-    color: #fff;
-    padding: 0.5rem;
-    border-radius: 4px;
-    font-family: inherit;
-    transition: border-color 0.2s;
+.field input[type="number"],
+.field select {
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    font-family: var(--font-main);
+    font-size: 0.9rem;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.field input:focus {
+.field input:hover,
+.field select:hover {
+    border-color: var(--text-secondary);
+}
+
+.field input:focus,
+.field select:focus {
     border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
     outline: none;
 }
 
 .field input[readonly] {
-    opacity: 0.5;
-    cursor: not-allowed;
+    opacity: 0.6;
+    cursor: default;
+    border-style: dashed;
 }
 
 .save-status {
     font-size: 0.75rem;
-    color: #888;
+    color: var(--text-secondary);
     margin-top: 1rem;
     font-style: italic;
+    text-align: right;
 }
+
 /* Slider Controls */
 .label-row {
     display: flex;
@@ -79,18 +108,24 @@
 
 .slider-value {
     color: var(--accent);
+    font-family: monospace;
     font-size: 0.85rem;
     font-weight: 600;
+    background: var(--bg-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
 }
 
 .slider {
     width: 100%;
     -webkit-appearance: none;
     height: 4px;
-    background: #333;
+    background: var(--bg-deep);
     border-radius: 2px;
     outline: none;
-    margin: 0.5rem 0;
+    margin: 0.75rem 0;
+    border: 1px solid var(--border);
 }
 
 .slider::-webkit-slider-thumb {
@@ -101,20 +136,345 @@
     background: var(--accent);
     border-radius: 50%;
     cursor: pointer;
-    border: 2px solid #000;
+    border: 2px solid var(--bg-surface);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
     transition: transform 0.1s;
 }
 
 .slider::-webkit-slider-thumb:hover {
-    transform: scale(1.1);
+    transform: scale(1.2);
 }
 
 .slider-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 0.75rem;
-    color: rgba(255, 255, 255, 0.4);
+    font-size: 0.7rem;
+    color: var(--text-secondary);
     margin-top: 0.25rem;
-    padding: 0 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
+/* Accordion Styles */
+.accordion-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px;
+}
+
+.accordion-item {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.accordion-header {
+    padding: 16px 20px;
+    cursor: pointer;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+    background: linear-gradient(to right, var(--bg-surface), var(--bg-elevated));
+    transition: color 0.2s;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+}
+
+.accordion-header:hover {
+    color: var(--text-primary);
+    background: var(--bg-elevated);
+}
+
+.accordion-item.active {
+    border-color: var(--accent);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.accordion-item.active .accordion-header {
+    color: var(--accent);
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+}
+
+.accordion-content {
+    display: none;
+    padding: 2px 0;
+    /* Content handles its own padding */
+    animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.accordion-item.active .accordion-content {
+    display: block;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* DNA Tree View */
+.dna-editor-root {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    /* Fallback safe stack */
+    font-size: 0.85rem;
+    padding: 12px;
+    background: var(--bg-deep);
+    /* Darker background for code */
+}
+
+.tree-node {
+    margin-left: 2px;
+    position: relative;
+    padding-left: 14px;
+    /* Space for guide line */
+}
+
+/* Guide Line */
+.tree-node::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    /* Center in padding */
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border);
+    opacity: 0.5;
+}
+
+.tree-node:last-child::before {
+    height: 14px;
+    /* Stop at half height representing branding to node */
+}
+
+.node-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: default;
+}
+
+.node-header:hover {
+    background: var(--glass);
+}
+
+.caret {
+    cursor: pointer;
+    color: var(--text-secondary);
+    width: 12px;
+    height: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    transition: transform 0.2s, color 0.2s;
+    user-select: none;
+}
+
+.caret:hover {
+    color: var(--text-primary);
+}
+
+.tree-node.collapsed>.node-children {
+    display: none;
+}
+
+.node-key {
+    color: #a0a0aa;
+    /* text-secondary but simpler */
+    font-weight: 500;
+}
+
+.leaf .node-key {
+    color: #e0e0e6;
+    /* text-primary */
+}
+
+.dna-value {
+    background: transparent;
+    border: 1px solid transparent;
+    /* Invisible border until hover/focus */
+    border-bottom: 1px dashed var(--border);
+    /* Subtle indicator it's editable */
+    color: #d19a66;
+    /* Code string colorish */
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: inherit;
+    min-width: 60px;
+    transition: all 0.2s;
+}
+
+.dna-value[type="number"] {
+    color: #61afef;
+    /* Code number colorish */
+}
+
+.dna-value:hover {
+    background: var(--bg-surface);
+    border-color: var(--border);
+    border-bottom-style: solid;
+}
+
+.dna-value:focus {
+    background: var(--bg-surface);
+    border-color: var(--accent);
+    color: var(--text-primary);
+    outline: none;
+    box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+/* Oklab Color Picker */
+.color-swatch-container {
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    background: var(--bg-surface);
+    transition: all 0.2s;
+}
+
+.color-swatch-container:hover {
+    border-color: var(--text-secondary);
+    transform: scale(1.05);
+}
+
+.color-swatch {
+    width: 32px;
+    height: 18px;
+    border-radius: 3px;
+    box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.2);
+}
+
+.oklab-picker {
+    position: absolute;
+    background: rgba(28, 28, 33, 0.95);
+    /* bg-elevated with opacity */
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 20px;
+    width: 260px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    animation: popIn 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes popIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.picker-header {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.picker-preview {
+    height: 48px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.picker-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.control-group {
+    display: grid;
+    grid-template-columns: 24px 1fr 48px;
+    align-items: center;
+    gap: 8px;
+}
+
+.control-group label {
+    font-weight: 700;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.control-group span {
+    font-family: monospace;
+    font-size: 0.8rem;
+    text-align: right;
+    color: var(--text-primary);
+}
+
+.control-group input[type="range"] {
+    width: 100%;
+    margin: 0;
+    height: 6px;
+}
+
+/* Specific gradients for sliders to give visual hint */
+.slider-l {
+    background: linear-gradient(to right, #000, #fff);
+}
+
+.slider-c {
+    background: linear-gradient(to right, #888, #f00);
+    /* Rough approx */
+}
+
+.slider-h {
+    background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.picker-actions {
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.picker-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.picker-close:hover {
+    background: var(--bg-surface);
+    border-color: var(--text-secondary);
+}

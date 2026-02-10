@@ -380,23 +380,20 @@ async def inject_rag_context(track: str, user_prompt: str) -> dict[str, Any]:
         "api_spec": _get_api_spec(track),
         "examples": [],
         "material_registry": None,
+        "finish_registry": None,
         "noise_configs": None,
+        "blacksmith_guidance": "",
     }
     
-    # Search for similar successful generations
-    try:
-        similar = await semantic_search(user_prompt, limit=3)
-        context["examples"] = [
-            {"prompt": r.semantic_desc, "dna": r.dna}
-            for r in similar
-            if r.dna
-        ]
-    except Exception as e:
-        print(f"⚠️ RAG search failed (continuing without examples): {e}")
-    
+    # No semantic search - examples can teach bad patterns (wrong orientation, etc.)
+    # api_spec + blacksmith_guidance + static barrel example suffice
+
     # Add track-specific context
     if track in ("matter", "MATTER"):
         context["material_registry"] = _get_material_registry()
+        context["finish_registry"] = _get_finish_registry()
+        from .rag_blacksmith import get_blacksmith_guidance
+        context["blacksmith_guidance"] = get_blacksmith_guidance(user_prompt)
     elif track in ("landscape", "LANDSCAPE"):
         context["noise_configs"] = _get_noise_configs()
     
@@ -404,21 +401,31 @@ async def inject_rag_context(track: str, user_prompt: str) -> dict[str, Any]:
 
 
 def _get_api_spec(track: str) -> dict[str, Any]:
-    """Get API specification for track (from docs or hardcoded)."""
-    # MVP: Hardcoded spec from data-specifications.md
+    """
+    Canonical API specification for SDF primitives, operations, and modifiers.
+
+    Single source of truth for Matter track. Update here when compiler adds
+    primitives or modifier params.
+    """
     return {
+        "orientation_notes": {
+            "cylinders": "Z-axis aligned (height along Z). Vertical structures (barrels, columns, grips, lids): use rot: [90, 0, 0].",
+            "torus": "Ring in XZ plane (hole along Y). Vertical barrel bands: no rotation. Horizontal cylinder bands: rot: [90, 0, 0].",
+            "wedge": "Use for blades, fins, ramps. Avoids sub-voxel thickness vs box+taper.",
+        },
         "primitives": [
             "Sphere(radius)",
-            "Box(size_vec3)",
-            "Cylinder(radius, height, sides)",
+            "Box(size_vec3) - half-extents [width_X, height_Y, depth_Z]",
+            "Cylinder(radius, height, sides) - sides 0=smooth",
             "Capsule(radius, height)",
-            "Torus(major_r, minor_r)",
+            "Torus(major_r, minor_r) - ring in XZ plane",
             "Cone(radius, height, sides)",
             "Plane(normal, distance)",
-            "Revolution(profile, axis, offset) - Lathe: spin a 2D profile around axis",
-            "Mandelbulb(power, iterations, scale) - 3D fractal, compute-heavy",
-            "Menger(iterations, scale) - Menger sponge fractal",
-            "Julia(c=[x,y,z,w], iterations, scale) - Quaternion Julia set",
+            "Wedge(size, taper_axis, taper_dir) - taper_axis shrinks, taper_dir is along-axis",
+            "Revolution(profile, axis, offset) - lathe, profile=child node",
+            "Mandelbulb(power, iterations, scale) - power 8, iterations max 12",
+            "Menger(iterations, scale) - iterations max 5",
+            "Julia(c=[x,y,z,w], iterations, scale) - iterations max 12",
         ],
         "operations": [
             "union",
@@ -429,18 +436,18 @@ def _get_api_spec(track: str) -> dict[str, Any]:
             "smooth_intersect(k) - filleted convex edges",
         ],
         "modifiers": {
-            "twist": {"params": ["axis", "rate"], "desc": "Spiral along axis (rate = rad/meter)"},
-            "bend": {"params": ["axis", "angle"], "desc": "Curve shape (angle in radians)"},
-            "taper": {"params": ["axis", "scale_min", "scale_max"], "desc": "Scale cross-section"},
+            "twist": {"params": ["axis", "rate"], "desc": "Spiral along axis (rate = rad/m)"},
+            "bend": {"params": ["axis", "angle"], "desc": "Curve shape (angle rad). Mod angle 0.3-0.8."},
+            "taper": {"params": ["axis", "scale_min", "scale_max"], "desc": "scale_min >= 0.15. JIT only."},
             "mirror": {"params": ["axis"], "desc": "Symmetry across axis plane"},
-            "round": {"params": ["radius"], "desc": "Bevel edges (radius in meters)"},
+            "round": {"params": ["radius"], "desc": "Bevel edges (m)"},
             "voronoi": {
                 "params": ["cell_size", "wall_thickness", "mode"],
-                "desc": "3D Voronoi cellular pattern (mode: subtract or intersect)",
+                "desc": "mode: subtract or intersect",
             },
         },
         "modifier_examples": [
-            '{"type": "twist", "axis": "y", "rate": 3.14}',
+            '{"type": "twist", "axis": "z", "rate": 2.0}',
             '{"type": "bend", "axis": "x", "angle": 0.5}',
             '{"type": "taper", "axis": "y", "scale_min": 0.2, "scale_max": 1.0}',
             '{"type": "mirror", "axis": "x"}',
@@ -448,31 +455,13 @@ def _get_api_spec(track: str) -> dict[str, Any]:
             '{"type": "voronoi", "cell_size": 0.2, "wall_thickness": 0.02, "mode": "subtract"}',
         ],
         "texture_patterns": {
-            "perlin": {
-                "params": ["scale", "intensity", "color_variation", "roughness_variation"],
-                "desc": "General smooth noise (FBM-based)",
-            },
-            "wood_grain": {
-                "params": ["scale", "intensity", "color_variation", "roughness_variation"],
-                "desc": "Concentric ring pattern for wood",
-            },
-            "marble": {
-                "params": ["scale", "intensity", "color_variation", "roughness_variation"],
-                "desc": "Veined stone pattern (sine + turbulence)",
-            },
-            "rust": {
-                "params": ["scale", "intensity", "color_variation", "roughness_variation"],
-                "desc": "Patchy weathering/corrosion (voronoi + perlin blend)",
-            },
+            "perlin": {"params": ["scale", "intensity", "color_variation", "roughness_variation"], "desc": "Smooth noise"},
+            "wood_grain": {"params": ["scale", "intensity", "color_variation", "roughness_variation"], "desc": "Wood grain"},
+            "marble": {"params": ["scale", "intensity", "color_variation", "roughness_variation"], "desc": "Veined stone"},
+            "rust": {"params": ["scale", "intensity", "color_variation", "roughness_variation"], "desc": "Weathering"},
         },
-        "texture_pattern_example": (
-            '{"type": "wood_grain", "scale": 10.0, "intensity": 0.3, '
-            '"color_variation": 0.2, "roughness_variation": 0.1}'
-        ),
-        "units": {
-            "distance": "1.0 = 1 meter",
-            "rotation": "quaternion [x, y, z, w]",
-        },
+        "texture_pattern_example": '{"type": "wood_grain", "scale": 8.0, "intensity": 0.6, "color_variation": 0.4, "roughness_variation": 0.5}',
+        "units": {"distance": "1.0 = 1 m", "rotation": "Euler deg [x,y,z] or quat [x,y,z,w]"},
     }
 
 
@@ -480,6 +469,12 @@ def _get_material_registry() -> dict[str, Any]:
     """Get available materials for Matter track from MaterialLibrarian."""
     from ..librarian import get_registry_for_rag
     return get_registry_for_rag()
+
+
+def _get_finish_registry() -> dict[str, Any]:
+    """Get available finishes for Matter track (Artist can output finish_id)."""
+    from ..librarian import get_finish_registry_for_rag
+    return get_finish_registry_for_rag()
 
 
 def _get_noise_configs() -> dict[str, Any]:
