@@ -1,0 +1,303 @@
+/* tools/forge-ui/static/css/studio-queue.css */
+/* Job Queue UI Styles */
+
+/* Queue Modal Overlay */
+.queue-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.queue-modal.active {
+    display: flex;
+}
+
+.queue-modal-content {
+    background: var(--bg-secondary, #1e1e1e);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 8px;
+    max-width: 900px;
+    width: 90%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.queue-modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color, #333);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.queue-modal-header h2 {
+    margin: 0;
+    font-size: 18px;
+    color: var(--text-primary, #fff);
+}
+
+.queue-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary, #aaa);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.queue-modal-close:hover {
+    background: var(--hover-bg, #333);
+}
+
+.queue-modal-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Queue Status Indicator (Top Nav) */
+.queue-status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg-tertiary, #252525);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.queue-status-indicator:hover {
+    background: var(--hover-bg, #333);
+}
+
+.queue-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--status-idle, #666);
+    transition: background 0.3s;
+}
+
+.queue-dot.idle {
+    background: #666;
+}
+
+.queue-dot.active {
+    background: #ff9500;
+    animation: pulse 2s infinite;
+}
+
+.queue-dot.queued {
+    background: #007aff;
+    animation: pulse 2s infinite;
+}
+
+.queue-dot.error {
+    background: #ff3b30;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+/* Queue Table */
+.queue-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.queue-table thead {
+    background: var(--bg-tertiary, #252525);
+    position: sticky;
+    top: 0;
+}
+
+.queue-table th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary, #aaa);
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.queue-table td {
+    padding: 12px;
+    border-bottom: 1px solid var(--border-color, #333);
+    color: var(--text-primary, #fff);
+}
+
+.queue-row {
+    transition: background 0.2s;
+}
+
+.queue-row:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.05));
+}
+
+.queue-row-running {
+    background: rgba(255, 149, 0, 0.1);
+}
+
+.queue-row-failed {
+    background: rgba(255, 59, 48, 0.1);
+}
+
+/* Type Badges */
+.queue-type-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.queue-type-badge.type-compile {
+    background: rgba(175, 82, 222, 0.2);
+    color: #af52de;
+}
+
+.queue-type-badge.type-generate {
+    background: rgba(90, 200, 250, 0.2);
+    color: #5ac8fa;
+}
+
+/* Status Badges */
+.queue-status-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.queue-status-badge.status-queued {
+    background: rgba(0, 122, 255, 0.2);
+    color: #007aff;
+}
+
+.queue-status-badge.status-running {
+    background: rgba(255, 149, 0, 0.2);
+    color: #ff9500;
+}
+
+.queue-status-badge.status-completed,
+.queue-status-badge.status-ready {
+    background: rgba(52, 199, 89, 0.2);
+    color: #34c759;
+}
+
+.queue-status-badge.status-failed {
+    background: rgba(255, 59, 48, 0.2);
+    color: #ff3b30;
+}
+
+.queue-status-badge.status-cancelled {
+    background: rgba(142, 142, 147, 0.2);
+    color: #8e8e93;
+}
+
+/* AI Stream Display */
+.queue-ai-stream {
+    margin-top: 4px;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    font-size: 11px;
+    color: var(--text-secondary, #aaa);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+
+.queue-ai-stream.text-streaming {
+    color: #5ac8fa;
+    animation: fadeIn 0.3s;
+}
+
+.queue-ai-stream.stage-updated {
+    animation: fadeIn 0.3s;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+/* Queue Position */
+.queue-position {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-tertiary, #666);
+}
+
+/* Cancel Button */
+.btn-cancel {
+    background: rgba(255, 59, 48, 0.1);
+    color: #ff3b30;
+    border: 1px solid rgba(255, 59, 48, 0.3);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-cancel:hover {
+    background: rgba(255, 59, 48, 0.2);
+    border-color: #ff3b30;
+}
+
+/* Empty State */
+.queue-empty {
+    text-align: center;
+    padding: 40px 20px !important;
+    color: var(--text-tertiary, #666);
+    font-style: italic;
+}
+/* Queue Description Tooltips */
+.queue-description[title] {
+    cursor: help;
+    position: relative;
+}
+
+.queue-description[title]:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.queue-detail-hint {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-tertiary, #666);
+    font-style: italic;
+}

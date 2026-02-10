@@ -35,90 +35,7 @@ class TriplanarTextures:
     resolution: int         # Texture resolution (assumed square)
 
 
-def bake_triplanar_textures(
-    positions: np.ndarray,      # (N, 3) float32
-    colors: np.ndarray,         # (N, 4) uint8 RGBA
-    scales: np.ndarray,         # (N, 3) float32
-    bounds_min: np.ndarray,     # (3,) float32
-    bounds_max: np.ndarray,     # (3,) float32
-    resolution: int = 512,
-) -> TriplanarTextures:
-    """
-    Bake Gaussian splat colors into 3 orthogonal projection textures.
-    
-    Each texture is an axis-aligned projection:
-    - XY plane: projects along Z-axis (view from +Z, good for side normals)
-    - XZ plane: projects along Y-axis (view from +Y, good for top/bottom)
-    - YZ plane: projects along X-axis (view from +X, good for left/right)
-    
-    Args:
-        positions: Splat center positions (N, 3)
-        colors: Splat RGBA colors (N, 4) uint8
-        scales: Splat ellipsoid radii (N, 3)
-        bounds_min: Scene bounding box minimum
-        bounds_max: Scene bounding box maximum
-        resolution: Output texture resolution (square)
-    
-    Returns:
-        TriplanarTextures with XY, XZ, YZ projections
-    """
-    n_splats = len(positions)
-    print(f"      [triplanar] Baking {n_splats} splats to 3×{resolution}×{resolution}...", flush=True)
-    # Expand bounds slightly to avoid edge artifacts
-    bounds_extent = bounds_max - bounds_min
-    bounds_center = (bounds_min + bounds_max) * 0.5
-    bounds_min = bounds_center - bounds_extent * 0.55
-    bounds_max = bounds_center + bounds_extent * 0.55
-    bounds_extent = bounds_max - bounds_min
-    
-    # Normalize positions to [0, 1] range
-    normalized = (positions - bounds_min) / (bounds_extent + 1e-8)
-    
-    # Scale radii to normalized space
-    normalized_scales = scales / (bounds_extent + 1e-8)
-    
-    # Allocate accumulation buffers (float for blending)
-    xy_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    xz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    yz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    
-    # Weight buffers (for proper alpha blending)
-    xy_weight = np.zeros((resolution, resolution), dtype=np.float32)
-    xz_weight = np.zeros((resolution, resolution), dtype=np.float32)
-    yz_weight = np.zeros((resolution, resolution), dtype=np.float32)
-    
-    # Splat each gaussian onto the textures (can be slow for large N; log progress)
-    log_interval = max(1, n_splats // 20)  # ~20 progress lines
-    for i in range(n_splats):
-        if log_interval and (i + 1) % log_interval == 0:
-            print(f"      [triplanar] Baking splat {i + 1}/{n_splats}...", flush=True)
-        px, py, pz = normalized[i]
-        sx, sy, sz = normalized_scales[i]
-        r, g, b, a = colors[i].astype(np.float32)
-        
-        # XY plane (project to x, y coords)
-        _splat_gaussian_2d(xy_accum, xy_weight, px, py, sx, sy, r, g, b, a, resolution)
-        
-        # XZ plane (project to x, z coords)
-        _splat_gaussian_2d(xz_accum, xz_weight, px, pz, sx, sz, r, g, b, a, resolution)
-        
-        # YZ plane (project to y, z coords)
-        _splat_gaussian_2d(yz_accum, yz_weight, py, pz, sy, sz, r, g, b, a, resolution)
-    
-    # Normalize and convert to uint8
-    xy = _finalize_texture(xy_accum, xy_weight)
-    xz = _finalize_texture(xz_accum, xz_weight)
-    yz = _finalize_texture(yz_accum, yz_weight)
-    _fill_empty_triplanar_texels(xy, xy_weight > 0.001)
-    _fill_empty_triplanar_texels(xz, xz_weight > 0.001)
-    _fill_empty_triplanar_texels(yz, yz_weight > 0.001)
 
-    return TriplanarTextures(
-        xy=xy, xz=xz, yz=yz,
-        bounds_min=bounds_min.astype(np.float32),
-        bounds_max=bounds_max.astype(np.float32),
-        resolution=resolution,
-    )
 
 
 def bake_triplanar_textures_oklab(
@@ -279,52 +196,7 @@ def _splat_point_2d_oklab(
                 accum[yi, xi, 3] = roughness * w
 
 
-def _splat_gaussian_2d(
-    accum: np.ndarray,
-    weight: np.ndarray,
-    cx: float, cy: float,
-    sx: float, sy: float,
-    r: float, g: float, b: float, a: float,
-    resolution: int,
-):
-    """Splat a single gaussian onto a 2D texture using weighted accumulation."""
-    # Convert to pixel coordinates
-    px = cx * resolution
-    py = cy * resolution
-    
-    # Gaussian kernel radius in pixels (3-sigma)
-    rx = max(sx * resolution * 3, 1.5)
-    ry = max(sy * resolution * 3, 1.5)
-    
-    # Bounding box
-    x0 = max(0, int(px - rx))
-    x1 = min(resolution, int(px + rx) + 1)
-    y0 = max(0, int(py - ry))
-    y1 = min(resolution, int(py + ry) + 1)
-    
-    if x0 >= x1 or y0 >= y1:
-        return
-    
-    # Compute gaussian weights for pixel grid
-    for yi in range(y0, y1):
-        for xi in range(x0, x1):
-            dx = (xi + 0.5 - px) / max(rx, 0.5)
-            dy = (yi + 0.5 - py) / max(ry, 0.5)
-            
-            # Gaussian falloff
-            d2 = dx * dx + dy * dy
-            if d2 > 1.0:
-                continue
-                
-            w = np.exp(-d2 * _SPLAT_GAUSSIAN_EXP) * (a / 255.0)  # Scale by alpha
-            
-            # Accumulate weighted color
-            accum[yi, xi, 0] += r * w
-            accum[yi, xi, 1] += g * w
-            accum[yi, xi, 2] += b * w
-            accum[yi, xi, 3] += w  # Store weight in alpha
-            
-            weight[yi, xi] += w
+
 
 
 def _finalize_texture(
@@ -743,60 +615,7 @@ def bake_triplanar_from_voxel_oklab(
     )
 
 
-def bake_triplanar_from_voxel_colors(
-    positions: np.ndarray,      # (N, 3) float32 voxel center positions
-    colors: np.ndarray,         # (N, 4) uint8 RGBA
-    bounds_min: np.ndarray,     # (3,) float32
-    bounds_max: np.ndarray,     # (3,) float32
-    resolution: int = 512,
-) -> TriplanarTextures:
-    """
-    Bake voxel colors into 3 orthogonal textures by projecting each voxel
-    to the nearest pixel on XY, XZ, YZ planes. Each voxel splats to a small
-    kernel (3x3) so coverage is higher and unwritten texels don't dominate.
-    """
-    bounds_extent = bounds_max - bounds_min
-    bounds_extent = np.maximum(bounds_extent, 1e-8)
-    normalized = (positions - bounds_min) / bounds_extent  # (N, 3) in [0,1]
 
-    xy_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    xz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    yz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    xy_weight = np.zeros((resolution, resolution), dtype=np.float32)
-    xz_weight = np.zeros((resolution, resolution), dtype=np.float32)
-    yz_weight = np.zeros((resolution, resolution), dtype=np.float32)
-
-    n = len(positions)
-    res = resolution
-    log_interval = max(1, n // 20)
-    for i in range(n):
-        if log_interval and (i + 1) % log_interval == 0:
-            print(f"      [triplanar] Voxel color {i + 1}/{n}...", flush=True)
-        px, py, pz = np.clip(normalized[i], 0.0, 1.0)
-        r, g, b, a = colors[i].astype(np.float32)
-        roughness = np.clip(a / 255.0, 0.0, 1.0)
-        w = 1.0
-        ix = min(int(px * res), res - 1)
-        iy = min(int(py * res), res - 1)
-        iz = min(int(pz * res), res - 1)
-        # XY plane: (x, y) -> (ix, iy); XZ: (ix, iz); YZ: (iy, iz)
-        _splat_at(xy_accum, xy_weight, ix, iy, r, g, b, roughness, w, res)
-        _splat_at(xz_accum, xz_weight, ix, iz, r, g, b, roughness, w, res)
-        _splat_at(yz_accum, yz_weight, iy, iz, r, g, b, roughness, w, res)
-
-    xy = _finalize_texture(xy_accum, xy_weight, alpha_is_roughness=True)
-    xz = _finalize_texture(xz_accum, xz_weight, alpha_is_roughness=True)
-    yz = _finalize_texture(yz_accum, yz_weight, alpha_is_roughness=True)
-    # Fill unwritten pixels with average color so normal-blended sampling never gets black
-    _fill_empty_triplanar_texels(xy, xy_weight > 0.001)
-    _fill_empty_triplanar_texels(xz, xz_weight > 0.001)
-    _fill_empty_triplanar_texels(yz, yz_weight > 0.001)
-    return TriplanarTextures(
-        xy=xy, xz=xz, yz=yz,
-        bounds_min=bounds_min.astype(np.float32),
-        bounds_max=bounds_max.astype(np.float32),
-        resolution=resolution,
-    )
 
 
 def pack_triplanar_textures(textures: TriplanarTextures) -> bytes:

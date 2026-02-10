@@ -23,7 +23,9 @@ from .math_jit_nodes import (
     MandelbulbNode,
     MengerSpongeNode,
     JuliaSetNode,
-    PrimitiveNode,
+    PrimitiveNode, # Re-exporting for typing if needed, though mostly unused directly now
+    GeometryNode,
+    MaterialNode,
 )
 from .math_jit_modifiers import (
     TransformNode,
@@ -50,8 +52,10 @@ class SdfGraph(nn.Module):
         x: [N, 3] tensor
         Returns: [N] distances
         """
-        dist, _ = self.root_node(x)
-        return dist
+        res = self.root_node(x)
+        if isinstance(res, tuple):
+            return res[0]
+        return res
 
     def query_attributes(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -63,8 +67,14 @@ class SdfGraph(nn.Module):
         Returns:
             [N, 5] tensor: [oklab_L, oklab_a, oklab_b, metallic, roughness]
         """
-        _, attrs = self.root_node(x)
-        return attrs
+        res = self.root_node(x)
+        if isinstance(res, tuple):
+            return res[1]
+        
+        # Fallback for pure geometry root: return default orange
+        # TODO: Should likely match _DEFAULT_FALLBACK_COLOR in math_jit_nodes
+        orange = torch.tensor([1.0, 0.4, 0.0, 0.0, 0.5], device=x.device)
+        return orange.unsqueeze(0).expand(x.shape[0], 5)
 
 
 def _apply_modifiers_and_transform(node: nn.Module, node_data: Dict) -> nn.Module:
@@ -227,8 +237,10 @@ def build_node(node_data: Dict) -> nn.Module:
         _operation_keys = {"op", "children", "k"}
         params = {k: v for k, v in raw_params.items() if k not in _operation_keys}
 
-        # Get material properties (color + PBR)
+        # Resolve material properties (color + PBR)
         # Check node_data, params.color, and params.base_color (AI-gen)
+        # We need to decide if we wrap in MaterialNode or not.
+        
         explicit_color = (
             node_data.get("color")
             or params.get("color")
@@ -236,6 +248,8 @@ def build_node(node_data: Dict) -> nn.Module:
         )
         raw_mat = node_data.get("material_id", 0)
         
+        # Check if we assume a default material if none provided?
+        # Current logic: always resolve something (default gray if missing)
         color, metallic, roughness = _resolve_material(raw_mat, explicit_color)
         
         # Allow params to override PBR if provided explicitly
@@ -248,7 +262,7 @@ def build_node(node_data: Dict) -> nn.Module:
             radius = params.get("radius") or params.get("r") or params.get("size")
             if radius is None: radius = 0.1
             if isinstance(radius, list): radius = radius[0]
-            base_node = SphereNode(radius=float(radius), color=color, metallic=metallic, roughness=roughness)
+            base_node = SphereNode(radius=float(radius))
             
         elif shape == "box":
             size = params.get("size")
@@ -261,32 +275,32 @@ def build_node(node_data: Dict) -> nn.Module:
                 size = [float(size)] * 3
             else:
                 size = [float(s) for s in size]
-            base_node = BoxNode(size=size, color=color, metallic=metallic, roughness=roughness)
+            base_node = BoxNode(size=size)
             
         elif shape == "cylinder":
             radius = params.get("radius") or params.get("r") or 0.1
             height = params.get("height") or params.get("h") or 0.2
-            base_node = CylinderNode(radius=float(radius), height=float(height), color=color, metallic=metallic, roughness=roughness)
+            base_node = CylinderNode(radius=float(radius), height=float(height))
             
         elif shape == "plane":
             normal = params.get("normal", [0.0, 1.0, 0.0])
             distance = params.get("distance", 0.0)
-            base_node = PlaneNode(normal=normal, distance=float(distance), color=color, metallic=metallic, roughness=roughness)
+            base_node = PlaneNode(normal=normal, distance=float(distance))
             
         elif shape == "capsule":
             radius = params.get("radius") or 0.05
             height = params.get("height") or 0.1
-            base_node = CapsuleNode(radius=float(radius), height=float(height), color=color, metallic=metallic, roughness=roughness)
+            base_node = CapsuleNode(radius=float(radius), height=float(height))
             
         elif shape == "torus":
             major_r = params.get("major_r") or 0.1
             minor_r = params.get("minor_r") or 0.02
-            base_node = TorusNode(major_r=float(major_r), minor_r=float(minor_r), color=color, metallic=metallic, roughness=roughness)
+            base_node = TorusNode(major_r=float(major_r), minor_r=float(minor_r))
             
         elif shape == "cone":
             radius = params.get("radius") or 0.1
             height = params.get("height") or 0.2
-            base_node = ConeNode(radius=float(radius), height=float(height), color=color, metallic=metallic, roughness=roughness)
+            base_node = ConeNode(radius=float(radius), height=float(height))
             
         elif shape == "wedge":
             size = params.get("size")
@@ -298,17 +312,17 @@ def build_node(node_data: Dict) -> nn.Module:
                 size = [float(s) for s in size]
             taper_axis = str(params.get("taper_axis", "y")).lower()
             taper_dir = str(params.get("taper_dir", "z")).lower()
-            base_node = WedgeNode(
-                size=size, taper_axis=taper_axis, taper_dir=taper_dir,
-                color=color, metallic=metallic, roughness=roughness,
-            )
+            base_node = WedgeNode(size=size, taper_axis=taper_axis, taper_dir=taper_dir)
 
         elif shape == "revolution":
             profile_data = params.get("profile")
             if profile_data:
                 profile_child = build_node(profile_data)
+                # Unwrap if it was wrapped in a material (revolution only cares about geometry profile)
+                if isinstance(profile_child, MaterialNode):
+                    profile_child = profile_child.child
             else:
-                profile_child = BoxNode(size=[0.1, 0.2, 0.01], color=color, metallic=metallic, roughness=roughness)
+                profile_child = BoxNode(size=[0.1, 0.2, 0.01])
             axis = params.get("axis", "y")
             offset = float(params.get("offset", 0.0))
             base_node = RevolutionNode(profile_child, axis=axis, offset=offset)
@@ -318,14 +332,12 @@ def build_node(node_data: Dict) -> nn.Module:
                 power=float(params.get("power", 8.0)),
                 iterations=int(params.get("iterations", 8)),
                 scale=float(params.get("scale", 1.0)),
-                color=color, metallic=metallic, roughness=roughness,
             )
         
         elif shape == "menger":
             base_node = MengerSpongeNode(
                 iterations=int(params.get("iterations", 3)),
                 scale=float(params.get("scale", 1.0)),
-                color=color, metallic=metallic, roughness=roughness,
             )
         
         elif shape == "julia":
@@ -333,11 +345,15 @@ def build_node(node_data: Dict) -> nn.Module:
                 c=params.get("c", [0.3, 0.5, 0.2, 0.1]),
                 iterations=int(params.get("iterations", 8)),
                 scale=float(params.get("scale", 1.0)),
-                color=color, metallic=metallic, roughness=roughness,
             )
             
         else:
-            base_node = SphereNode(radius=0.01, color=color, metallic=metallic, roughness=roughness)
+            base_node = SphereNode(radius=0.01)
+        
+        # Apply Material Wrapper
+        # We always apply it currently because _resolve_material returns a default. 
+        # Ideally we only apply if user asked for it, but for compatibility we attach the resolved material.
+        base_node = MaterialNode(base_node, color=color, metallic=metallic, roughness=roughness)
         
         return _apply_modifiers_and_transform(base_node, node_data)
     
@@ -356,7 +372,7 @@ def build_node(node_data: Dict) -> nn.Module:
             k = float(node_data.get("smoothness", node_data.get("k", 0.5)))
             if len(children) <= 2:
                 return SmoothUnionNode(children, k=k)
-            # Fold to binary tree so all primitives participate (SmoothUnionNode is binary)
+            # Fold to binary tree
             acc = children[0]
             for c in children[1:]:
                 acc = SmoothUnionNode([acc, c], k=k)
@@ -377,16 +393,22 @@ def build_node(node_data: Dict) -> nn.Module:
         else:
             return SphereNode(radius=0.0)
     
-    # Legacy format
+    # Legacy format fallback
     elif node_type == "sphere":
-        return SphereNode(radius=node_data.get("radius", 1.0))
+        # Legacy nodes imply default material or encoded in node_data somehow?
+        # Assuming legacy nodes are just geometry for now unless we see color fields
+        # But for safety let's wrap them in default gray material so they don't turn orange
+        n = SphereNode(radius=node_data.get("radius", 1.0))
+        return MaterialNode(n) # Default gray
     elif node_type == "box":
-        return BoxNode(size=node_data.get("size", [1.0, 1.0, 1.0]))
+        n = BoxNode(size=node_data.get("size", [1.0, 1.0, 1.0]))
+        return MaterialNode(n)
     elif node_type == "union":
         children = [build_node(c) for c in node_data.get("children", [])]
         return UnionNode(children)
         
-    return SphereNode(radius=0.0)
+    # Super-fallback
+    return MaterialNode(SphereNode(radius=0.0))
 
 
 def _find_parent_and_index(node: Dict, target_id: str, parent: Optional[Dict] = None, index_in_parent: Optional[int] = None) -> Tuple[Optional[Dict], Optional[int]]:
@@ -404,8 +426,6 @@ def _find_parent_and_index(node: Dict, target_id: str, parent: Optional[Dict] = 
 def _inject_machining_patches(dna: Dict) -> None:
     """
     Inject A2 Machinist subtract patches into the SDF tree.
-    Each patch targets a node by id and wraps it as subtract(target, patch_geometry).
-    Mutates dna["root_node"] in place. Multiple patches to the same target accumulate.
     """
     patches = dna.get("machining_patches") or []
     if not patches:
@@ -427,7 +447,6 @@ def _inject_machining_patches(dna: Dict) -> None:
             continue
         child_list = parent.get("children") or parent.get("nodes") or []
         child = child_list[idx]
-        # Subtract primitive -> node dict: type primitive, shape, params, transform
         sub_node: Dict = {
             "type": "primitive",
             "shape": sub.get("shape", "box"),
@@ -450,12 +469,7 @@ def _inject_machining_patches(dna: Dict) -> None:
 
 
 def _prepare_dna(dna: Dict) -> Dict:
-    """Merge ``dna["materials"]`` and ``dna["machining_patches"]`` before building.
-
-    - Machining patches (A2) are injected into the tree as subtract ops per target_node_id.
-    - Materials (A3) are merged into each node's data so ``build_node`` can read them.
-    Also normalises ``procedural_texture`` (AI) vs ``texture_pattern`` (legacy).
-    """
+    """Merge ``dna["materials"]`` and ``dna["machining_patches"]`` before building."""
     materials = dna.get("materials", {})
     n_mats = len(materials) if isinstance(materials, dict) else 0
     if n_mats:
@@ -469,15 +483,12 @@ def _prepare_dna(dna: Dict) -> Dict:
         node_id = node.get("id")
         if node_id and node_id in materials:
             cfg = materials[node_id]
-            # Support both raw dicts and Pydantic models
             if hasattr(cfg, "model_dump"):
                 cfg = cfg.model_dump(exclude_none=True)
             elif not isinstance(cfg, dict):
                 cfg = vars(cfg)
 
             params = node.setdefault("params", {})
-
-            # 1. Apply finish overrides first (if finish_id set)
             finish_id = cfg.get("finish_id")
             if finish_id:
                 finish = get_finish(finish_id)
@@ -487,8 +498,7 @@ def _prepare_dna(dna: Dict) -> Dict:
                     for key in ("roughness", "metallic"):
                         if finish.get(key) is not None:
                             params[key] = finish[key]
-
-            # 2. Map AI fields -> compiler fields (explicit overrides finish)
+            
             if "base_color" in cfg and cfg["base_color"] is not None:
                 params["color"] = cfg["base_color"]
             if "material_id" in cfg:
@@ -502,7 +512,6 @@ def _prepare_dna(dna: Dict) -> Dict:
                     params[key] = cfg[key]
             inject_count[0] += 1
 
-        # Recurse into children (and "nodes" for alternate tree shape)
         for child in node.get("children") or node.get("nodes") or []:
             _inject(child)
 
@@ -517,11 +526,7 @@ def _prepare_dna(dna: Dict) -> Dict:
 
 
 def collect_node_bounds(dna: Dict) -> List[Tuple[str, List[float], List[float]]]:
-    """
-    Collect world-space AABB (bmin, bmax) for every node that has an "id".
-    Call after _prepare_dna(dna) (e.g. dna passed to build_sdf_graph is already prepared).
-    Returns: [(node_id, bmin, bmax), ...] with bmin/bmax as 3-element lists.
-    """
+    """Collect world-space AABB (bmin, bmax) for every node that has an "id"."""
     out: List[Tuple[str, List[float], List[float]]] = []
 
     def traverse(node: Dict) -> None:
@@ -549,7 +554,6 @@ def collect_node_bounds(dna: Dict) -> List[Tuple[str, List[float], List[float]]]
 
 def build_sdf_graph(dna: Dict) -> SdfGraph:
     """Convert DNA JSON to PyTorch SDF evaluation graph."""
-    # Inject A2 Machinist patches (subtract ops) into tree, then merge A3 materials
     _inject_machining_patches(dna)
     _prepare_dna(dna)
 
@@ -572,7 +576,6 @@ def build_sdf_graph(dna: Dict) -> SdfGraph:
     if bounds is None and hasattr(root, "compute_bounds"):
         try:
             b_min, b_max = root.compute_bounds()
-            # Ensure we export lists of floats
             bounds = (b_min.cpu().tolist(), b_max.cpu().tolist())
             print(f"    📐 Auto-calculated bounds: {bounds}", flush=True)
         except Exception as e:

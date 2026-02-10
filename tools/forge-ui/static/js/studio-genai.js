@@ -460,10 +460,10 @@ function listenForGenerationComplete(jobId) {
                 syncExternalViewport(payload.asset_id);
             }
 
-            UI.showFeedbackUI(payload.asset_id);
-            // Wire Add to Chain button dynamically since switchAssetEditor is global
-            if (UI.ui.btnAddChain) {
-                UI.ui.btnAddChain.onclick = () => window.switchToAssetEditor(payload.asset_id);
+            if (payload.asset_id && window.load_asset && window.viewportReady) {
+                if (window.clear_sdf) window.clear_sdf();
+                window.load_asset(`/api/assets/${payload.asset_id}/binary`, payload.asset_id);
+                syncExternalViewport(payload.asset_id);
             }
 
             resetGenerateButton();
@@ -499,43 +499,58 @@ function listenForGenerationComplete(jobId) {
 }
 
 // =============================================================================
-// Feedback & Save
+// Batch Actions: View & Save
 // =============================================================================
 
-window.rateAsset = async function (rating) {
-    const container = document.getElementById('feedback-container');
-    const assetId = container?.dataset.assetId;
+/**
+ * Load a generated asset into the viewport.
+ * @param {string} assetId 
+ */
+window.viewAsset = function (assetId) {
     if (!assetId) return;
 
-    UI.updateRatingVisuals(rating);
+    UI.logOutput(`📺 Loading asset ${assetId} into viewport...`, 'info');
 
-    try {
-        await fetch(`/api/assets/${assetId}/feedback`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rating: rating })
-        });
-        UI.logOutput(`Rated ${rating} stars`, 'success');
-    } catch (e) {
-        UI.logOutput('Failed to submit rating', 'error');
-        console.error(e);
+    if (window.load_asset && window.viewportReady) {
+        if (window.clear_sdf) window.clear_sdf();
+        window.load_asset(`/api/assets/${assetId}/binary`, assetId);
+        syncExternalViewport(assetId);
+    } else {
+        UI.logOutput('⚠️ Viewport not ready', 'warning');
     }
 };
 
-window.saveAsset = async function () {
-    const container = document.getElementById('feedback-container');
-    const assetId = container?.dataset.assetId;
+/**
+ * Promote an asset from draft to library.
+ * @param {string} assetId 
+ * @param {HTMLElement} btn - Optional button element to update state
+ */
+window.saveAsset = async function (assetId, btn = null) {
+    // If no assetId provided, try to find it from the active document (legacy fallback)
+    if (!assetId) {
+        const container = document.getElementById('feedback-container');
+        assetId = container?.dataset.assetId;
+    }
 
-    if (!assetId || !UI.ui.btnSave) return;
+    if (!assetId) return;
 
-    UI.ui.btnSave.disabled = true;
-    UI.ui.btnSave.textContent = 'Saving...';
+    // Use specific button if provided, otherwise fallback to global UI element
+    const targetBtn = btn || UI.ui.btnSave;
+    const originalText = targetBtn ? targetBtn.textContent : 'Save';
+
+    if (targetBtn) {
+        targetBtn.disabled = true;
+        targetBtn.textContent = 'Saving...';
+    }
 
     try {
         const res = await fetch(`/api/assets/${assetId}/save`, { method: 'POST' });
         if (res.ok) {
-            UI.logOutput('Asset saved to library and learnt!', 'success');
-            UI.ui.btnSave.textContent = 'Saved ✓';
+            UI.logOutput(`✅ Asset ${assetId} saved to library!`, 'success');
+            if (targetBtn) {
+                targetBtn.textContent = 'Saved ✓';
+                targetBtn.classList.add('btn-success');
+            }
             // Refresh library view if open
             if (document.getElementById('page-library').style.display !== 'none') {
                 document.querySelector('.tab-btn.active')?.click();
@@ -544,9 +559,11 @@ window.saveAsset = async function () {
             throw new Error('Save failed');
         }
     } catch (e) {
-        UI.logOutput('Failed to save asset', 'error');
-        UI.ui.btnSave.disabled = false;
-        UI.ui.btnSave.textContent = 'Save to Library';
+        UI.logOutput('❌ Failed to save asset', 'error');
+        if (targetBtn) {
+            targetBtn.disabled = false;
+            targetBtn.textContent = originalText;
+        }
         console.error(e);
     }
 };

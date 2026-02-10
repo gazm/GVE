@@ -29,8 +29,9 @@ import copy
 from typing import List, Tuple, Optional, Callable, Union
 from dataclasses import dataclass
 
-from ..torch_preloader import preloader
-from .math_jit_builder import collect_node_bounds
+# Adjusted imports for src/compiler/bakeries/splat/trainer.py
+from ....torch_preloader import preloader
+from ...math_jit_builder import collect_node_bounds
 
 
 @dataclass
@@ -519,6 +520,7 @@ def initialize_splats_poisson(
     return positions, attrs, avg_spacing
 
 
+
 # ============================================================================
 # Splat Optimizer
 # ============================================================================
@@ -879,6 +881,8 @@ class SplatOptimizer:
         )
 
 
+
+
 # ============================================================================
 # Post-Training Coverage Analysis (SplatSDF-inspired)
 # Reference: arXiv:2411.15468 — Eq. 3 (weighted blending / coverage)
@@ -1226,9 +1230,6 @@ def compile_splats_swatch_mode(
     dna: dict,
     swatches_per_node: int = 1,
     swatch_scale_factor: float = 0.4,
-    concept_image_base64: Optional[str] = None,
-    use_concept_texture: bool = True,
-    concept_texture_blend: float = 0.7,
     device: Optional[str] = None,
 ) -> bytes:
     """
@@ -1269,20 +1270,6 @@ def compile_splats_swatch_mode(
     )
     print(f"    [splat_trainer] 🧩 Swatch mode: {len(positions)} swatches from {len(node_bounds_list)} nodes", flush=True)
     splat_data = build_splat_data_from_swatches(positions, attrs, scales, normals=normals)
-    if concept_image_base64 and use_concept_texture:
-        # Swatch mode: lower blend so procedural/material (e.g. black oxide) isn't washed out
-        blend = min(concept_texture_blend, 0.5)
-        print(f"    [splat_trainer] 🖼️ Recoloring swatches from concept image (blend={blend})...", flush=True)
-        from .concept_texture import recolor_splats_from_concept_image
-        bounds_tup = (tuple(bounds[0]), tuple(bounds[1]))
-        new_colors = recolor_splats_from_concept_image(
-            splat_data.positions,
-            splat_data.colors,
-            concept_image_base64,
-            bounds_tup,
-            blend=blend,
-        )
-        splat_data.colors = new_colors
     return pack_splat_data(splat_data)
 
 
@@ -1298,18 +1285,11 @@ def compile_splats(
     overlap_batch: bool = True,
     overlap_batch_size: Optional[int] = None,
     device: Optional[str] = None,
-    concept_image_base64: Optional[str] = None,
-    use_concept_texture: bool = True,
-    concept_texture_blend: float = 0.7,
 ) -> bytes:
     """Compile splats from an SDF function.
 
     Colors are always exported as Oklab u8 -- the shader handles the
     single Oklab -> linear RGB conversion for PBR lighting.
-
-    When concept_image_base64 is provided and use_concept_texture is True,
-    a recolor pass samples the concept image at each splat position (orthographic
-    front view) and blends with the procedural color.
 
     Args:
         sdf_fn: SDF evaluation function ``(N, 3) -> (N,)``, typically an ``SdfGraph``.
@@ -1318,9 +1298,6 @@ def compile_splats(
         iterations: Number of optimisation iterations.
         target_loss: Stop training if loss drops below this.
         device: ``"cuda"``, ``"cpu"``, or ``None`` for auto-detect.
-        concept_image_base64: Optional base64 concept image for texture recolor.
-        use_concept_texture: If True and concept_image_base64 set, recolor from image.
-        concept_texture_blend: Blend factor 0=procedural only, 1=full image (default 0.7).
 
     Returns:
         Packed binary splat data.
@@ -1435,21 +1412,6 @@ def compile_splats(
 
         print(f"    [splat_trainer] 4. Exporting Oklab...", flush=True)
         splat_data = optimizer.export()
-
-        if concept_image_base64 and use_concept_texture:
-            print(f"    [splat_trainer] 🖼️ Recoloring from concept image (blend={concept_texture_blend})...", flush=True)
-            from .concept_texture import recolor_splats_from_concept_image
-            bounds_tup = (tuple(bounds[0]), tuple(bounds[1]))
-            new_colors = recolor_splats_from_concept_image(
-                splat_data.positions,
-                splat_data.colors,
-                concept_image_base64,
-                bounds_tup,
-                blend=concept_texture_blend,
-            )
-            splat_data.colors = new_colors
-            print(f"    [splat_trainer] ✅ Concept texture applied", flush=True)
-
         binary_data = pack_splat_data(splat_data)
 
         print(f"    [splat_trainer] ✅ Done: {len(splat_data.positions)} splats on {device.upper()}", flush=True)
@@ -1471,3 +1433,5 @@ def compile_splats(
                 print(f"    [splat_trainer] 🧹 Cleared CUDA cache", flush=True)
             except Exception as e:
                 print(f"    [splat_trainer] ⚠️ CUDA cache cleanup failed: {e}", flush=True)
+
+

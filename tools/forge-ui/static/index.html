@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="/static/css/studio-components.css">
     <link rel="stylesheet" href="/static/css/studio-tree.css">
     <link rel="stylesheet" href="/static/css/studio-world.css">
+    <link rel="stylesheet" href="/static/css/studio-queue.css">
     <link rel="preload" href="/static/wasm/pkg/gve_wasm_bg.wasm" as="fetch" crossorigin>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,6 +40,9 @@
             </div>
             <div class="status-indicator" id="status-torch">
                 <span class="dot torch-dot cold"></span> <span class="torch-label">Torch Cold</span>
+            </div>
+            <div class="queue-status-indicator" id="queue-button">
+                <span class="queue-dot idle"></span> Queue <span id="queue-count"></span>
             </div>
         </div>
     </nav>
@@ -213,7 +217,7 @@
             </div>
         </div>
 
-        <!-- Right: Output & Feedback -->
+        <!-- Right: Output -->
         <aside class="studio-panel genai-panel-right">
             <div class="resize-handle handle-left"></div>
             <!-- Generation Output Log -->
@@ -225,21 +229,6 @@
                 <div id="generation-output" class="output-log">
                     <p class="output-empty">Generation output will appear here...</p>
                 </div>
-            </div>
-
-            <!-- Feedback & Save UI (Hidden by default) -->
-            <div id="feedback-container" class="feedback-panel" style="display: none;">
-                <div class="rating-box">
-                    <span>Rate:</span>
-                    <button class="star-btn" onclick="rateAsset(1)">★</button>
-                    <button class="star-btn" onclick="rateAsset(2)">★</button>
-                    <button class="star-btn" onclick="rateAsset(3)">★</button>
-                    <button class="star-btn" onclick="rateAsset(4)">★</button>
-                    <button class="star-btn" onclick="rateAsset(5)">★</button>
-                </div>
-                <button id="btn-save-draft" class="btn-primary btn-sm" onclick="saveAsset()">Save to Library</button>
-                <button id="btn-add-to-chain" class="btn-accent btn-sm" onclick="switchToAssetEditor()"
-                    style="display: none;">Add to Chain</button>
             </div>
         </aside>
     </main>
@@ -460,9 +449,28 @@
 
     <div id="browser-overlay" class="browser-overlay"></div>
 
+    <!-- Queue Modal -->
+    <div id="queue-modal" class="queue-modal">
+        <div class="queue-modal-content">
+            <div class="queue-modal-header">
+                <h2>Job Queue</h2>
+                <button class="queue-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="queue-modal-body">
+                <div id="queue-table-container">
+                    <!-- Table loaded via HTMX -->
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        Loading queue...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script type="module" src="/static/js/studio-navigation.js"></script>
     <script type="module" src="/static/js/studio-genai.js"></script>
     <script type="module" src="/static/js/studio-world.js"></script>
+    <script type="module" src="/static/js/studio-queue.js"></script>
     <script src="/static/js/editors.js"></script>
 </body>
 

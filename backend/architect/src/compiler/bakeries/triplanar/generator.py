@@ -1,5 +1,5 @@
 """
-Procedural Triplanar Bake - Surface sample SDF + attributes, bake to triplanar.
+Triplanar Baker - Surface sample SDF + attributes, bake to triplanar.
 
 When texture_mode is "procedural_triplanar", the compiler uses this path instead
 of Gaussian splat training: sample the SDF surface, get material+procedural
@@ -16,16 +16,15 @@ import numpy as np
 import torch
 from typing import Tuple, List, Optional, Any
 
-from .triplanar_baker import (
-    bake_triplanar_textures,
+# Adjusted imports for new location src/compiler/bakeries/triplanar/
+from ...splat_rasterizer import (
+    TriplanarTextures,
     bake_triplanar_textures_oklab,
-    bake_triplanar_from_voxel_colors,
-    bake_triplanar_from_voxel_oklab,
     bake_triplanar_from_voxel_oklab,
     pack_triplanar_textures,
     SplatBakeMode,
 )
-from ..librarian.finishes import get_finish
+from ....librarian.finishes import get_finish
 
 # Chunk size for batch query_attributes on surface voxels
 _VOXEL_ATTRS_CHUNK = 50_000
@@ -36,7 +35,7 @@ _DEFAULT_ATTRS = np.array([0.627, 0.0, 0.0, 0.0, 0.5], dtype=np.float32)
 
 def _check_black_oxide_resolution() -> None:
     """Verify black_oxide finish resolves to dark Oklab. Logs warning if not."""
-    from .math_jit_builder import _resolve_material
+    from ...math_jit_builder import _resolve_material
 
     finish = get_finish("black_oxide")
     if not finish:
@@ -64,7 +63,7 @@ def _resolve_attrs_from_dna_materials(
     resolves base_color (from entry or finish_id), roughness, metallic; converts
     color to Oklab. Nodes not in materials get _DEFAULT_ATTRS.
     """
-    from .math_jit_builder import _parse_srgb_color, _resolve_material
+    from ...math_jit_builder import _parse_srgb_color, _resolve_material
 
     materials = dna.get("materials") or {}
     if not isinstance(materials, dict):
@@ -270,7 +269,7 @@ def _bake_triplanar_from_voxels(
         # Per-node materials: when dna.materials exists, blend material base with query_attributes
         # so edge_wear, cavity_grime, rust and procedural_texture from the graph are baked.
         if dna is not None:
-            from .math_jit_builder import collect_node_bounds
+            from ...math_jit_builder import collect_node_bounds
             node_bounds_list = collect_node_bounds(dna)
             if node_bounds_list and (dna.get("materials") or {}):
                 node_idx = _assign_voxels_to_nodes(positions_np, node_bounds_list)
@@ -381,7 +380,8 @@ def bake_procedural_triplanar(
             bake_result, sdf_graph, resolution, surface_tolerance, dna=dna, device=device, mode=mode
         )
 
-    from .splat_trainer import initialize_splats_batched
+    # Adjusted import for splat trainer
+    from ..splat.trainer import initialize_splats_batched
 
     sdf_fn = sdf_graph
     attrs_fn = sdf_graph if hasattr(sdf_graph, "query_attributes") else None

@@ -339,6 +339,10 @@ class BaseAgent(ABC, Generic[T]):
                 
                 # Parse JSON response
                 json_text = response.text
+                usage = response.usage_metadata
+                if usage and hasattr(usage, "prompt_token_count"):
+                    print(f"  [{self.name}] 📥 Input tokens: {usage.prompt_token_count}")
+                
                 data = json.loads(json_text)
                 result = schema.model_validate(data)
                 
@@ -442,6 +446,10 @@ class GeminiVisionAgent(BaseAgent[T]):
                 
                 # Parse response
                 json_text = response.text
+                usage = response.usage_metadata
+                if usage and hasattr(usage, "prompt_token_count"):
+                    print(f"  [{self.name}] 📥 Input tokens (vision): {usage.prompt_token_count}")
+                
                 data = json.loads(json_text)
                 result = schema.model_validate(data)
                 

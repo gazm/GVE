@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 
 from generated.types import AssetMetadata, AssetCategory
-from src.compiler import enqueue_compile
+# from src.compiler import enqueue_compile  # Moved to local imports to avoid circularity
 
 MONGO_URI = "mongodb+srv://user:MRyoqoHiZ73yRkUk@gve.vurn2az.mongodb.net/?appName=GVE"
 DB_NAME = "gve"
@@ -47,6 +47,7 @@ class AssetLibrarian:
         asset_id = doc["_id"]
         
         # Trigger background compilation
+        from src.compiler import enqueue_compile
         await enqueue_compile(asset_id)
         
         return asset_id
@@ -334,6 +335,7 @@ class AssetLibrarian:
         
         # Trigger background compilation if DNA present
         if "dna" in doc:
+            from src.compiler import enqueue_compile
             await enqueue_compile(doc["_id"])
         
         return doc["_id"]

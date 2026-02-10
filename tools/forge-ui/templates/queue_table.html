@@ -1,0 +1,106 @@
+{# tools/forge-ui/templates/queue_table.html #}
+{# HTMX partial for job queue table #}
+<table class="queue-table">
+    <thead>
+        <tr>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th>Priority</th>
+            <th>Started</th>
+            <th>Duration</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% if jobs %}
+        {% for job in jobs %}
+        <tr class="queue-row queue-row-{{ job.status }}" data-job-id="{{ job.job_id }}">
+            <td>
+                <span class="queue-type-badge type-{{ job.job_type }}">
+                    {{ job.job_type }}
+                </span>
+            </td>
+            <td class="queue-description" {% if job.job_type=='compile' and job.compiler_output %}
+                title="{{ job.compiler_output[-200:] }}" {% elif job.job_type=='generate' and job.streaming_text %}
+                title="{{ job.streaming_text[-200:] }}" {% endif %}>
+                {% if job.job_type == 'compile' %}
+                Compile: {{ job.asset_id[:8] }}...
+                {% if job.status == 'queued' and job.queue_position %}
+                <div class="queue-position">#{{ job.queue_position }} in queue</div>
+                {% endif %}
+                {% if job.compiler_output %}
+                <div class="queue-detail-hint">Hover for details</div>
+                {% endif %}
+                {% else %}
+                Generate: {{ job.prompt[:30] }}...
+                {% if job.status == 'running' %}
+                <div class="queue-ai-stream" data-job-id="{{ job.job_id }}">
+                    {% if job.streaming_text %}
+                    {{ job.streaming_text[-80:] }}...
+                    {% elif job.current_stage %}
+                    → {{ job.current_stage }}
+                    {% endif %}
+                </div>
+                {% endif %}
+                {% if job.streaming_text %}
+                <div class="queue-detail-hint">Hover for full output</div>
+                {% endif %}
+                {% endif %}
+            </td>
+            <td>
+                <span class="queue-status-badge status-{{ job.status }}">
+                    {{ job.status }}
+                </span>
+            </td>
+            <td>
+                {% if job.priority %}
+                {{ job.priority.name if job.priority.name else job.priority }}
+                {% else %}
+                -
+                {% endif %}
+            </td>
+            <td>
+                {% if job.started_at %}
+                {{ job.started_at[11:19] }} {# Show HH:MM:SS #}
+                {% else %}
+                -
+                {% endif %}
+            </td>
+            <td>
+                {% if job.duration %}
+                {{ "%.1f"|format(job.duration) }}s
+                {% elif job.compile_time %}
+                {{ "%.1f"|format(job.compile_time) }}s
+                {% else %}
+                -
+                {% endif %}
+            </td>
+            <td>
+                {% if job.status in ['queued', 'running'] %}
+                <button class="btn-sm btn-cancel" hx-delete="/api/queue/{{ job.job_id }}" hx-target="closest tr"
+                    hx-swap="outerHTML" hx-confirm="Cancel this job?">
+                    Cancel
+                </button>
+                {% elif job.job_type == 'generate' and job.status == 'completed' and job.asset_id %}
+                <div class="row-actions">
+                    <button class="btn-sm btn-view" onclick="window.viewAsset('{{ job.asset_id }}')">
+                        View
+                    </button>
+                    <button class="btn-sm btn-save" onclick="window.saveAsset('{{ job.asset_id }}', this)">
+                        Save
+                    </button>
+                </div>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+            <td colspan="7" class="queue-empty">No jobs in queue</td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>

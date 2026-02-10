@@ -79,12 +79,16 @@ def bake_sdf(
     # Note: We store the TRUE SDF (negative = inside) for raymarching
     distance_grid_sdf = distances.reshape(res[0], res[1], res[2]).cpu().numpy().astype(np.float32)
     
-    # For MeshLib, we need inverted sign (positive = inside)
-    distance_grid_meshlib = -distance_grid_sdf
+    # 5. Create MeshLib SimpleVolumeMinMax (dense storage)
+    # For MeshLib, we need inverted sign (positive = inside) if we want standard iso-surface 0
+    # But wait, MeshLib iso-surface usually works on > iso values.
+    # Standard: interior is < 0. MeshLib: ??? 
+    # vdb_converter original said: "-distance_grid_sdf"
+    distance_grid_meshlib = -distance_grid_sdf 
+    
     value_min = float(distance_grid_meshlib.min())
     value_max = float(distance_grid_meshlib.max())
     
-    # 5. Create MeshLib SimpleVolumeMinMax (dense storage)
     simple_vol = mrmesh.SimpleVolumeMinMax()
     simple_vol.dims = mrmesh.Vector3i(int(res[0]), int(res[1]), int(res[2]))
     simple_vol.voxelSize = mrmesh.Vector3f(voxel_size, voxel_size, voxel_size)

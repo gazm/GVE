@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from pydantic import BaseModel, Field
 
-from .queue import CompilePriority
+from ..queue import CompilePriority
 
 # =============================================================================
 # Configuration Models
@@ -38,9 +38,8 @@ class CompilerOptions(BaseModel):
     splat_overlap_batch: bool = True
     splat_overlap_batch_size: Optional[int] = None
     
-    # Concept/Swatch settings
-    use_concept_texture: bool = True
-    concept_texture_blend: float = 0.7
+    
+    # Swatch settings
     swatches_per_node: int = 1
     swatch_scale_factor: float = 0.4
 
@@ -87,7 +86,7 @@ class CompilerContext:
 
         print(f"    [Context] Building SDF graph...", flush=True)
         # Avoid circular imports by importing inside method
-        from .math_jit import build_sdf_graph
+        from ..math_jit import build_sdf_graph
         
         # We run this on the main thread as it constructs PyTorch graph (fast enough)
         self.sdf_graph = build_sdf_graph(self.dna)
@@ -131,7 +130,7 @@ class CompilerContext:
         await self.ensure_sdf_graph()
         
         import asyncio
-        from .vdb_converter import bake_sdf
+        from .volume.generator import bake_sdf
         
         print(f"    [Context] Baking SDF to VDB/Grid (res={self.options.resolution})...", flush=True)
         
@@ -158,7 +157,7 @@ class CompilerContext:
         await self.ensure_dense_grid_and_vdb()
         
         import asyncio
-        from .mesh_repair import repair_and_decimate
+        from .mesh.generator import repair_and_decimate
         
         print(f"    [Context] Generating shell mesh...", flush=True)
         
@@ -187,7 +186,7 @@ class Baker(ABC):
         pass
 
     @abstractmethod
-    async def bake(self, ctx: CompilerContext) -> Dict[str, bytes]:
+    async def bake(self, ctx: 'CompilerContext') -> Dict[str, bytes]:
         """
         Produce artifacts.
         Returns:
@@ -195,3 +194,7 @@ class Baker(ABC):
             Example: {"splat_data": b'...', "triplanar_data": b'...'}
         """
         pass
+
+
+
+

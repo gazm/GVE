@@ -11,7 +11,8 @@ Reference: docs/workflows/compiler-pipeline.md (Phase 4)
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple
+from typing import List, Tuple, Union
+from .math_jit_nodes import ModifierNode, _DEFAULT_FALLBACK_COLOR
 
 # =============================================================================
 # Low-level noise primitives (vectorised for GPU)
@@ -192,7 +193,7 @@ _PATTERN_COLORS = {
 }
 
 
-class ProceduralTextureNode(nn.Module):
+class ProceduralTextureNode(ModifierNode):
     """Wraps a child SDF node and modulates material attributes with noise.
 
     Supports patterns: ``perlin``, ``wood_grain``, ``marble``, ``rust``.
@@ -212,8 +213,7 @@ class ProceduralTextureNode(nn.Module):
         roughness_variation: float = 0.1,
         metallic_variation: float = 0.0,
     ):
-        super().__init__()
-        self.child = child
+        super().__init__(child)
         self.pattern = pattern
         self.scale = scale
         self.intensity = intensity
@@ -225,7 +225,14 @@ class ProceduralTextureNode(nn.Module):
         self.register_buffer('target_color', target)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        dist, attrs = self.child(x)
+        res = self.child(x)
+        if isinstance(res, tuple):
+            dist, attrs = res
+        else:
+            # Pure geometry child - Inject Default Orange Material
+            dist = res
+            orange = torch.tensor(_DEFAULT_FALLBACK_COLOR + [0.0, 0.5], device=x.device)
+            attrs = orange.unsqueeze(0).expand(dist.shape[0], 5)
 
         pattern_fn = _PATTERN_FNS.get(self.pattern)
         if pattern_fn is None:
@@ -262,14 +269,8 @@ class ProceduralTextureNode(nn.Module):
 
         return dist, new_attrs
 
-    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not hasattr(self.child, "compute_bounds"):
-            return (torch.tensor([-1.]*3, device=self.target_color.device), 
-                    torch.tensor([1.]*3, device=self.target_color.device))
-        return self.child.compute_bounds()
 
-
-class TextureModifierNode(nn.Module):
+class TextureModifierNode(ModifierNode):
     """Applies edge wear, cavity grime, and rust to material attributes."""
     def __init__(
         self,
@@ -280,8 +281,7 @@ class TextureModifierNode(nn.Module):
         eps: float = 0.003,
         rust_scale: float = 4.0,
     ):
-        super().__init__()
-        self.child = child
+        super().__init__(child)
         self.edge_wear = float(edge_wear)
         self.cavity_grime = float(cavity_grime)
         self.rust_amount = float(rust_amount)
@@ -292,7 +292,14 @@ class TextureModifierNode(nn.Module):
         self.register_buffer("rust_color", rust_color)
     
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        dist, attrs = self.child(x)
+        res = self.child(x)
+        if isinstance(res, tuple):
+            dist, attrs = res
+        else:
+             # Pure geometry child - Inject Default Orange Material
+            dist = res
+            orange = torch.tensor(_DEFAULT_FALLBACK_COLOR + [0.0, 0.5], device=x.device)
+            attrs = orange.unsqueeze(0).expand(dist.shape[0], 5)
         
         # Texture modifiers are CPU-only to avoid GPU memory spikes
         if x.is_cuda:
@@ -322,7 +329,14 @@ class TextureModifierNode(nn.Module):
             )
             x_off = x.unsqueeze(1) + offsets.unsqueeze(0)
             x_off = x_off.reshape(-1, 3)
-            dist_off, _ = self.child(x_off)
+            
+            # Handle child return types (geometry vs material)
+            res_off = self.child(x_off)
+            if isinstance(res_off, tuple):
+                dist_off = res_off[0]
+            else:
+                dist_off = res_off
+            
             dist_off = dist_off.reshape(x.shape[0], 6)
             
             laplacian = (dist_off.sum(dim=1) - 6.0 * dist) / (eps * eps)
@@ -357,9 +371,3 @@ class TextureModifierNode(nn.Module):
             new_attrs[:, 4] = torch.clamp(new_attrs[:, 4] + var_rough, 0.0, 1.0)
         
         return dist, new_attrs
-    
-    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not hasattr(self.child, "compute_bounds"):
-            return (torch.tensor([-1.]*3, device=self.rust_color.device),
-                    torch.tensor([1.]*3, device=self.rust_color.device))
-        return self.child.compute_bounds()

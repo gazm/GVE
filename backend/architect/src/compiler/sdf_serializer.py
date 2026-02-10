@@ -142,8 +142,15 @@ class BytecodeBuilder:
             # Recurse with updated transform
             return self.visit(node.child, transform={"pos": new_pos})
 
+        # Unwrap attribute-only nodes (MaterialNode, ProceduralTextureNode, TextureModifierNode)
+        # These affect volume baking and splat training, but are invisible to real-time SDF bytecode.
+        if type(node).__name__ in ("MaterialNode", "ProceduralTextureNode", "TextureModifierNode"):
+            return self.visit(node.child, transform)
+
         # Base case: Primitive
-        if isinstance(node, PrimitiveNode):
+        if isinstance(node, (SphereNode, BoxNode, CylinderNode, CapsuleNode, 
+                            TorusNode, ConeNode, PlaneNode, RevolutionNode, 
+                            MandelbulbNode, MengerSpongeNode, JuliaSetNode, WedgeNode)):
             return self._visit_primitive(node, transform)
             
         # Modifiers

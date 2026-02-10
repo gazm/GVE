@@ -275,7 +275,7 @@ async def inject_rag_context_with_concepts(
             {
                 "prompt": c.prompt,
                 "concept_image": c.concept_image,
-                "dna": c.dna,
+                "description": _dna_to_description(c.dna) if c.dna else "N/A", # Use description instead of full DNA JSON
             }
             for c in similar_concepts
             if c.concept_image

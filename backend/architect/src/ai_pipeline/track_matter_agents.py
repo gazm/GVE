@@ -46,6 +46,7 @@ Match the concept image's form as closely as possible using primitives.
 
 # CONSTRAINTS
 1. Use ONLY Union operations (no Subtract/Intersect yet)
+ 2. **ROOT NODE MUST USE PLAIN "union"**: The root sdf_tree node MUST have `"op": "union"` (NOT "smooth_union"). Smooth operations are only allowed for nested child operations, not the root.
 2. Tag major blocks with lod_cutoff: 0 (always visible)
 3. NO mechanical details (handles, bolts, vents) - that's for Machinist
 4. Use realistic meter-based dimensions (a sword is ~1.2m, a barrel is ~1m tall)

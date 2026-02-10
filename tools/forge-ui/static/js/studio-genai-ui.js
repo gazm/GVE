@@ -18,8 +18,6 @@ export const ui = {
     btnApprove: document.getElementById('btn-approve-concept'),
     btnRegenerate: document.getElementById('btn-regenerate-concept'),
     btnCancel: document.getElementById('btn-cancel-concept'),
-    btnSave: document.getElementById('btn-save-draft'),
-    btnAddChain: document.getElementById('btn-add-to-chain'),
 
     // Containers
     conceptPreview: document.getElementById('concept-preview'),
@@ -27,7 +25,6 @@ export const ui = {
     conceptPromptDisplay: document.getElementById('concept-prompt-display'),
     regenerateDialog: document.getElementById('regenerate-dialog'),
     stageProgress: document.getElementById('stage-progress'),
-    feedbackContainer: document.getElementById('feedback-container'),
     costEstimate: document.getElementById('cost-estimate'),
     estimateTime: document.querySelector('.estimate-time'),
     outputLog: document.getElementById('generation-output'),
@@ -37,7 +34,6 @@ export const ui = {
     typeBtns: document.querySelectorAll('.type-btn'),
     styleChips: document.querySelectorAll('.style-chips .chip'),
     modeBtns: document.querySelectorAll('.mode-btn'),
-    starBtns: document.querySelectorAll('.star-btn'),
 };
 
 // =============================================================================
@@ -155,31 +151,6 @@ export function updateStageProgress(stage, status) {
 // Feedback & Cost UI
 // =============================================================================
 
-export function showFeedbackUI(assetId) {
-    if (ui.feedbackContainer) {
-        ui.feedbackContainer.style.display = 'flex';
-        ui.feedbackContainer.dataset.assetId = assetId;
-
-        // Reset state
-        ui.starBtns.forEach(b => b.classList.remove('active'));
-
-        if (ui.btnSave) {
-            ui.btnSave.textContent = 'Save to Library';
-            ui.btnSave.disabled = false;
-        }
-
-        if (ui.btnAddChain) {
-            ui.btnAddChain.style.display = 'block';
-            // Note: onclick handler needs to be attached by controller
-        }
-    }
-}
-
-export function updateRatingVisuals(rating) {
-    ui.starBtns.forEach((btn, idx) => {
-        btn.classList.toggle('active', idx < rating);
-    });
-}
 
 export function updateCostDisplay(cost_usd, time_sec) {
     if (ui.costEstimate) ui.costEstimate.textContent = `$${cost_usd.toFixed(2)}`;

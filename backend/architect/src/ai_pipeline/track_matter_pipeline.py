@@ -141,7 +141,7 @@ async def execute_matter_pipeline(
                         user_prompt=state.user_prompt,
                         rag_context=state.rag_context,
                         previous_outputs={
-                            "a1": state.stage_outputs["a1"],
+                            "a1": _strip_dna_for_context(state.stage_outputs["a1"]), # Full A1 can be large, use lite version
                             "a1_part": {"part_id": part_id, "part": part.model_dump()},
                         },
                         style_token=state.style_token,
@@ -179,7 +179,17 @@ async def execute_matter_pipeline(
         # =================================================================
         print("  [A3] Initializing Artist agent...")
         artist = ArtistAgent()
-        ctx = state.to_agent_context()  # Updated with A1 + A2 outputs
+        # Artist only needs IDs and types for material assignment. Strip params/transforms.
+        artist_prev_outputs = {
+            "a1": _strip_dna_for_context(state.stage_outputs["a1"], strip_params=True),
+            "a2": state.stage_outputs.get("a2", {}),
+        }
+        ctx = AgentContext(
+            user_prompt=state.user_prompt,
+            rag_context=state.rag_context,
+            previous_outputs=artist_prev_outputs,
+            style_token=state.style_token,
+        )
         
         if has_concept and concept_image_path:
             print("  [A3] Calling Artist.generate_with_image()...")
@@ -236,6 +246,9 @@ async def _draft_compile_for_preview(dna: dict[str, Any], stage: str) -> bytes |
         return None
 
 
+    return dna
+
+
 def _build_intermediate_dna(
     a1: BlacksmithOutput,
     a2: MachinistOutput | None,
@@ -243,24 +256,14 @@ def _build_intermediate_dna(
 ) -> dict[str, Any]:
     """
     Build intermediate DNA from available stage outputs.
-    
     Used for stage previews before all stages are complete.
     """
-    import json
-    
     root_node = a1.sdf_tree.model_dump()
     
     dna = {
         "root_node": root_node,
         "metadata": a1.metadata if isinstance(a1.metadata, dict) else {},
     }
-    
-    # Debug: log the DNA structure
-    children_count = len(root_node.get("children") or [])
-    print(f"  [intermediate_dna] 🔍 Building DNA: root_node.op={root_node.get('op')}, children={children_count}", flush=True)
-    if children_count > 0:
-        first_child = root_node["children"][0]
-        print(f"  [intermediate_dna] First child: type={first_child.get('type')}, shape={first_child.get('shape')}", flush=True)
     
     # Add A2 patches if available
     if a2 and a2.delta_patch:
@@ -276,6 +279,34 @@ def _build_intermediate_dna(
         }
     
     return dna
+
+
+def _strip_dna_for_context(dna: dict[str, Any], strip_params: bool = False) -> dict[str, Any]:
+    """
+    Strip unneeded fields from DNA to reduce context size.
+    
+    If strip_params is True, removes 'params' and 'transform' from nodes.
+    Used for Artist stage which only needs IDs and types for material assignment.
+    """
+    import copy
+    dna_lite = copy.deepcopy(dna)
+    
+    def strip_recursive(node: dict):
+        if strip_params:
+            if "params" in node:
+                node.pop("params")
+            if "transform" in node:
+                node.pop("transform")
+        
+        if "children" in node and isinstance(node["children"], list):
+            for child in node["children"]:
+                if isinstance(child, dict):
+                    strip_recursive(child)
+                    
+    if "root_node" in dna_lite:
+        strip_recursive(dna_lite["root_node"])
+        
+    return dna_lite
 
 
 def _save_concept_to_temp(concept_image_base64: str) -> Path:
@@ -330,7 +361,11 @@ async def _run_machinist_batch(
                 file=str(concept_image_path),
                 config=upload_config,
             )
-            concept_file_uri = getattr(uploaded, "name", None) or str(getattr(uploaded, "uri", ""))
+            concept_file_uri = getattr(uploaded, "uri", None)
+            if concept_file_uri and concept_file_uri.startswith("files/"):
+                # Prefix with base URL for Batch API compatibility
+                concept_file_uri = f"https://generativelanguage.googleapis.com/v1beta/{concept_file_uri}"
+                
             if concept_file_uri:
                 print(f"  [A2] 📤 Concept image uploaded: {concept_file_uri}")
         except Exception as e:
@@ -403,6 +438,7 @@ async def _run_machinist_batch(
                 print(f"  [A2] ⏳ Batch job still running ({state_name}, {elapsed}s elapsed)...")
             if state_name == "JOB_STATE_SUCCEEDED":
                 aggregated: list[Any] = []
+                total_input_tokens = 0
                 dest = getattr(batch_job, "dest", None)
                 inlined = getattr(dest, "inlined_responses", None) if dest else None
                 if not inlined:
@@ -416,6 +452,11 @@ async def _run_machinist_batch(
                         continue
                     if not resp:
                         continue
+                    
+                    usage = getattr(resp, "usage_metadata", None)
+                    if usage and hasattr(usage, "prompt_token_count"):
+                        total_input_tokens += usage.prompt_token_count
+
                     text = getattr(resp, "text", None)
                     if not text:
                         continue
@@ -426,6 +467,8 @@ async def _run_machinist_batch(
                         aggregated.extend(ops)
                     except (json.JSONDecodeError, Exception) as e:
                         print(f"  [A2] ⚠️ Batch response {i + 1} parse error: {e}")
+                
+                print(f"  [A2] 📥 Total input tokens (batch): {total_input_tokens}")
                 print(f"  [A2] ✅ Batch completed: {len(aggregated)} operations from {len(inlined)} parts")
                 return aggregated
             if state_name in ("JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"):
