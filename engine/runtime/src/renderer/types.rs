@@ -61,43 +61,7 @@ pub struct Uniforms {
     pub _pad: [u32; 3],              // Alignment
 }
 
-/// SDF raymarching uniforms (160 bytes)
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct SDFUniforms {
-    pub inv_view_proj: [[f32; 4]; 4],   // 64 bytes
-    pub view_proj: [[f32; 4]; 4],       // 64 bytes (for frag_depth output)
-    pub camera_pos: [f32; 3],            // 12 bytes
-    pub time: f32,                        // 4 bytes
-    pub resolution: [f32; 2],             // 8 bytes
-    pub instruction_count: u32,           // 4 bytes
-    pub _pad: u32,                        // 4 bytes (alignment)
-}
-
-/// GPU-friendly SDF instruction (48 bytes, 16-byte aligned)
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct GPUSDFInstruction {
-    pub instr_type: u32,
-    pub op: u32,
-    pub operand1: u32,
-    pub operand2: u32,
-    pub params0: [f32; 4],  // 16-byte aligned for WebGL2
-    pub params1: [f32; 4],
-}
-
-impl Default for GPUSDFInstruction {
-    fn default() -> Self {
-        Self {
-            instr_type: 0,
-            op: 0,
-            operand1: 0,
-            operand2: 0,
-            params0: [0.0; 4],
-            params1: [0.0; 4],
-        }
-    }
-}
+// SDF Uniforms & Instructions REMOVED (v2.3)
 
 // ============================================================================
 // Loaded Asset Structs
@@ -113,14 +77,7 @@ pub struct LoadedMesh {
     pub index_format: wgpu::IndexFormat,  // Uint16 or Uint32
 }
 
-/// Loaded SDF asset with bytecode and cached bind group
-pub struct LoadedSDF {
-    pub instruction_buffer: wgpu::Buffer,
-    pub bind_group: wgpu::BindGroup,  // Cached to avoid per-frame allocation
-    pub instruction_count: u32,
-    pub bounds_min: [f32; 3],
-    pub bounds_max: [f32; 3],
-}
+// LoadedSDF REMOVED (v2.3)
 
 /// Loaded Splat asset
 pub struct LoadedSplat {
@@ -141,10 +98,23 @@ pub struct LoadedVolume {
     pub has_triplanar: bool,
     pub triplanar_bounds_min: [f32; 3],
     pub triplanar_bounds_max: [f32; 3],
+    pub patches: Vec<RuntimeVolumeOp>,
 }
 
-/// WGSL expects uniform block size rounded to 16 bytes (224). Rust repr(C) size may differ; use this for buffer allocation.
-pub const VOLUME_UNIFORM_BUFFER_SIZE: u64 = 224;
+/// Runtime volume operation (matches shared::RuntimeVolumeOp)
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct RuntimeVolumeOp {
+    pub op_type: u32,
+    pub _pad0: [u32; 3],
+    pub pos: [f32; 3],
+    pub _pad1: u32,
+    pub params: [f32; 8],
+    pub aabb_min: [f32; 3],
+    pub _pad2: u32,
+    pub aabb_max: [f32; 3],
+    pub _pad3: u32,
+}
 
 /// Volume raymarching uniforms (includes triplanar flag and bounds when used).
 #[repr(C)]
@@ -158,13 +128,18 @@ pub struct VolumeUniforms {
     pub bounds_max: [f32; 3],           // 12 bytes
     pub _pad2: f32,                     // 4 bytes
     pub view_proj: [[f32; 4]; 4],      // 64 bytes
-    pub use_triplanar: u32,             // 4 bytes
-    pub triplanar_bounds_min: [f32; 3], // 12 bytes
-    pub _pad3: f32,                     // 4 bytes
-    pub triplanar_bounds_max: [f32; 3], // 12 bytes
+    pub use_triplanar: u32,             // 4 bytes  (offset 176)
+    pub _pad_tri: [f32; 3],             // 12 bytes (alignment padding for WGSL vec3 16-byte alignment)
+    pub triplanar_bounds_min: [f32; 3], // 12 bytes (offset 192 — matches WGSL)
+    pub active_op_count: u32,           // 4 bytes  (offset 204)
+    pub triplanar_bounds_max: [f32; 3], // 12 bytes (offset 208 — matches WGSL)
     pub _pad4: f32,                     // 4 bytes
-    pub _pad_end: [f32; 3],             // 12 bytes trailing padding -> total 224
+    pub ops: [RuntimeVolumeOp; 16],     // 16 * 96 = 1536 bytes
 }
+
+/// WGSL expects uniform block size rounded to 16 bytes.
+/// Old size was 1504. New size is 224 + 1536 = 1760.
+pub const VOLUME_UNIFORM_BUFFER_SIZE: u64 = 1760;
 
 // ============================================================================
 // Configuration
@@ -209,7 +184,8 @@ impl ViewMode {
 #[derive(Debug, Clone)]
 pub struct DebugState {
     pub view_mode: String,
-    pub active_sdf: Option<u64>,
+    // pub active_sdf: Option<u64>, // Removed
+
     pub active_splat: Option<u64>,
     pub active_volume: Option<u64>,
     pub camera_pos: [f32; 3],

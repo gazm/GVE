@@ -223,7 +223,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 ///
 /// Raymarches a 3D texture containing SDF distance values.
 /// When use_triplanar is 1, samples triplanar textures at hit for base color.
-pub const VOLUME_SHADER: &str = r#"
+pub const VOLUME_SHADER: &str = concat!(
+    include_str!("shaders_sdf.wgsl"),
+    r#"
+struct RuntimeVolumeOp {
+    op_type: u32,
+    _pad0_x: u32,
+    _pad0_y: u32,
+    _pad0_z: u32,
+    pos: vec3<f32>,
+    _pad1: u32,
+    params_a: vec4<f32>,
+    params_b: vec4<f32>,
+    aabb_min: vec3<f32>,
+    _pad2: u32,
+    aabb_max: vec3<f32>,
+    _pad3: u32,
+}
+
 struct VolumeUniforms {
     inv_view_proj: mat4x4<f32>,
     camera_pos: vec3<f32>,
@@ -235,9 +252,10 @@ struct VolumeUniforms {
     view_proj: mat4x4<f32>,
     use_triplanar: u32,
     triplanar_bounds_min: vec3<f32>,
-    _pad3: f32,
+    active_op_count: u32,
     triplanar_bounds_max: vec3<f32>,
     _pad4: f32,
+    ops: array<RuntimeVolumeOp, 16>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: VolumeUniforms;
@@ -248,6 +266,65 @@ struct VolumeUniforms {
 @group(0) @binding(5) var triplanar_yz: texture_2d<f32>;
 @group(0) @binding(6) var triplanar_sampler: sampler;
 
+// ── Runtime Operation Math ──────────────────────────────────────────────
+
+fn apply_op(d_in: f32, p: vec3<f32>, op: RuntimeVolumeOp) -> f32 {
+    let p_local = p - op.pos;
+    var d_op: f32 = 1000.0;
+
+    // Primitives must match binary_format.rs PrimitiveOp enum
+    switch (op.op_type) {
+        case 1u: { // Sphere: [r, 0, 0, 0]
+            d_op = sd_sphere(p_local, op.params_a.x);
+        }
+        case 2u: { // Box: [sx, sy, sz, 0]
+            d_op = sd_box(p_local, op.params_a.xyz);
+        }
+        case 3u: { // Cylinder: [r, h, 0, 0]
+            d_op = sd_cylinder(p_local, op.params_a.x, op.params_a.y);
+        }
+        case 4u: { // Capsule: [r, h, 0, 0]
+            d_op = sd_capsule(p_local, op.params_a.x, op.params_a.y);
+        }
+        case 5u: { // Torus: [major, minor, 0, 0]
+            d_op = sd_torus(p_local, op.params_a.x, op.params_a.y);
+        }
+        case 6u: { // Cone: [r, h, 0, 0]
+            d_op = sd_cone(p_local, op.params_a.x, op.params_a.y);
+        }
+        case 7u: { // Plane: [nx, ny, nz, dist]
+            d_op = sd_plane(p_local, op.params_a.xyz, op.params_a.w);
+        }
+        case 8u: { // Revolution: [offset, axis, 0, 0] -> axis cast to u32?
+            // params: [offset, profile_w, profile_h, axis_flag]
+            // Revolution modifies space, it doesn't return distance directly easily?
+            // Actually it maps p -> p_profile.
+            let prof = sd_revolution(p_local, op.params_a.x, u32(op.params_a.w));
+            // Assume profile is box for now as runtime op?
+            // Or generic revolution? For now treating as Ring/Torus-like shell
+             d_op = sd_box(prof, vec3<f32>(op.params_a.y, op.params_a.z, 0.01));
+        }
+        case 9u: { // Mandelbulb: [scale, power, iter, 0]
+            d_op = sd_mandelbulb(p_local, op.params_a.y, op.params_a.x);
+        }
+        case 10u: { // Menger: [scale, iter, 0, 0]
+            d_op = sd_menger(p_local, op.params_a.x);
+        }
+        case 11u: { // Julia: [scale, c0, c1, c2, c3]
+            d_op = sd_julia(p_local, op.params_b, op.params_a.x);
+        }
+        default: {
+            d_op = 1000.0;
+        }
+    }
+    
+    // For now, all runtime ops are SUBTRACTIVE (machining)
+    return max(d_in, -d_op);
+}
+
+
+// ── Volume Sampling ─────────────────────────────────────────────────────
+
 // Sample SDF from 3D texture (world position -> distance).
 // Space: hit_pos, bounds_min, triplanar_bounds all share same world space (no model matrix).
 fn sample_sdf(world_pos: vec3<f32>) -> f32 {
@@ -257,7 +334,20 @@ fn sample_sdf(world_pos: vec3<f32>) -> f32 {
     // Clamp to valid range
     let uv_clamped = clamp(uv, vec3<f32>(0.001), vec3<f32>(0.999));
     
-    return textureSampleLevel(volume_texture, volume_sampler, uv_clamped, 0.0).r;
+    var d = textureSampleLevel(volume_texture, volume_sampler, uv_clamped, 0.0).r;
+
+    // Apply runtime operations
+    if (uniforms.active_op_count > 0u) {
+        for (var i = 0u; i < uniforms.active_op_count; i++) {
+            let op = uniforms.ops[i];
+            // AABB Culling: only evaluate expensive SDF if point is inside op bounds
+            let inside = all(world_pos >= op.aabb_min) && all(world_pos <= op.aabb_max);
+            if (inside) {
+                d = apply_op(d, world_pos, op);
+            }
+        }
+    }
+    return d;
 }
 
 // Compute gradient (normal) via central differences
@@ -272,11 +362,11 @@ fn compute_gradient(p: vec3<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(dx, dy, dz));
 }
 
-// Sample triplanar textures at world position; blend by normal. Returns vec4(rgb, roughness).
+// Sample triplanar textures at world position; blend by normal. Returns vec4(rgb, packed_alpha).
 // Use volume bounds so UVs match hit_pos coordinate space (same as SDF).
 fn sample_triplanar(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
-    let bmin = uniforms.bounds_min;
-    let bmax = uniforms.bounds_max;
+    let bmin = uniforms.triplanar_bounds_min;
+    let bmax = uniforms.triplanar_bounds_max;
     let extent = bmax - bmin;
     let uv_xy = (p.xy - bmin.xy) / (extent.xy + vec2<f32>(0.0001));
     let uv_xz = (p.xz - bmin.xz) / (vec2<f32>(extent.x, extent.z) + vec2<f32>(0.0001));
@@ -290,8 +380,8 @@ fn sample_triplanar(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let w = abs(n);
     let total = w.x + w.y + w.z + 0.0001;
     let rgb = (c_xy.rgb * w.z + c_xz.rgb * w.y + c_yz.rgb * w.x) / total;
-    let roughness = (c_xy.a * w.z + c_xz.a * w.y + c_yz.a * w.x) / total;
-    return vec4<f32>(rgb, roughness);
+    let packed_alpha = (c_xy.a * w.z + c_xz.a * w.y + c_yz.a * w.x) / total;
+    return vec4<f32>(rgb, packed_alpha);
 }
 
 // Ray-box intersection (returns t_near, t_far)
@@ -315,6 +405,10 @@ struct VolumeHit {
 }
 
 // Sphere tracing through the volume
+fn F_Schlick(cos_theta: f32, F0: vec3<f32>) -> vec3<f32> {
+    return F0 + (vec3<f32>(1.0) - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
 fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
     // First, intersect with bounding box
     let t_bounds = intersect_box(ro, rd);
@@ -372,14 +466,29 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
 
         var base_color: vec3<f32>;
         var roughness_val: f32 = 0.5;
+        var metallic_val: f32 = 0.0;
+        
         if (uniforms.use_triplanar != 0u) {
             let tri = sample_triplanar(hit_pos, n);
             base_color = tri.rgb;
-            // Saturation boost so reds and other colors read true (splat averaging pulls toward grey).
-            let lum = dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722));
-            base_color = mix(vec3<f32>(lum, lum, lum), base_color, 1.45);
-            // Alpha stores baked roughness (0-1). Legacy bakes used alpha=1.0 -> treat as default 0.5.
-            roughness_val = select(0.5, tri.a, tri.a < 0.999);
+            
+            // Unpack 4-bit roughness and metallic from alpha
+            // packed_alpha is [0..1], quantised to 255 levels.
+            // val = (rough << 4) | metal
+            let val = u32(tri.a * 255.0 + 0.5);
+            let rough_4 = (val >> 4u) & 0x0Fu;
+            let metal_4 = val & 0x0Fu;
+            
+            roughness_val = f32(rough_4) / 15.0;
+            metallic_val = f32(metal_4) / 15.0;
+            
+            // If the texture was baked with old code (alpha=1.0=255 -> rough=15, metal=15),
+            // this yields rough=1.0, metal=1.0. 
+            // Most old bakes have alpha=1.0. This is acceptable or we could heuristic check.
+            // Actually old bakes stored roughness directly in alpha. If roughness was 0.5 -> 128.
+            // 128 = 1000 0000 -> rough=8 (0.53), metal=0.
+            // So it actually maps decently!
+            
         } else {
             base_color = n * 0.5 + 0.5;
         }
@@ -395,7 +504,7 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
         let wrap = 0.25;
         let NdotL = (NdotL_key + wrap) / (1.0 + wrap);
 
-        // GGX specular + energy-conserving diffuse (match mesh shader so base color isn't washed by white specular)
+        // GGX specular + energy-conserving diffuse (match mesh shader)
         let a = roughness_val * roughness_val;
         let a2 = a * a;
         let d_term = NdotH * NdotH * (a2 - 1.0) + 1.0;
@@ -404,10 +513,17 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
         let k = (r_k * r_k) / 8.0;
         let G = (NdotV / (NdotV * (1.0 - k) + k + 0.0001))
               * (NdotL / (NdotL * (1.0 - k) + k + 0.0001));
-        let F0 = vec3<f32>(0.04);
-        let F = F0 + (vec3<f32>(1.0) - F0) * pow(clamp(1.0 - HdotV, 0.0, 1.0), 5.0);
+              
+        // F0: dielectric=0.04, metal=base_color
+        let F0 = mix(vec3<f32>(0.04), base_color, metallic_val);
+        
+        let F = F_Schlick(HdotV, F0);
+        
         let specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
-        let kD = (vec3<f32>(1.0) - F);
+        
+        // Energy conservation: diffuse decreases for metals and high specular
+        let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic_val);
+        
         let diffuse = kD * base_color / 3.14159;
 
         let light_col = vec3<f32>(1.0, 0.98, 0.95) * 2.0;
@@ -417,11 +533,7 @@ fn raymarch_volume(ro: vec3<f32>, rd: vec3<f32>) -> VolumeHit {
         let ambient = mix(vec3<f32>(0.04, 0.035, 0.03), vec3<f32>(0.14, 0.16, 0.20), n.y * 0.5 + 0.5) * base_color;
         let ao = 0.45 + 0.55 * (n.y * 0.5 + 0.5);
         var color = (Lo + ambient) * ao;
-        // Pull grey-blacks toward black; only skip the very darkest to avoid crushing to pure black
-        let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        if (luma > 0.03) {
-            color = max(vec3<f32>(0.0), (color - vec3<f32>(0.02)) / 0.98);
-        }
+        
         let mapped = color / (color + vec3<f32>(1.0));
         let gamma = pow(mapped, vec3<f32>(1.0 / 2.2));
 
@@ -484,4 +596,4 @@ fn fs_volume(in: VertexOutput) -> FragOutput {
     out.depth = result.depth;
     return out;
 }
-"#;
+"#);

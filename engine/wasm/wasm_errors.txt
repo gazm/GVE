@@ -1,0 +1,167 @@
+warning: field `default_mesh` is never read
+  --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\pipeline.rs:57:16
+   |
+41 | ...ct Renderer {
+   |       -------- field in this struct
+...
+57 | ...crate) default_mesh: L...
+   |           ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gve_runtime` (lib) generated 1 warning
+    Checking gve_wasm v0.1.0 (C:\Users\Admin\Documents\OG\Projects\GVE\engine\wasm)
+error[E0599]: no method named `load_test_sdf` found for struct `Renderer` in the current scope
+  --> src\lib.rs:82:25
+   |
+82 |         engine.renderer.load_test_sdf(999);
+   |                         ^^^^^^^^^^^^^ method not found in `Renderer`
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:97:25
+    |
+ 97 |         engine.renderer.set_active_sdf(None);
+    |                         ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:109:34
+    |
+109 |                  engine.renderer.set_active_sdf(None);
+    |                                  ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `has_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:125:44
+    |
+125 |                  } else if engine.renderer.has_sdf(asset_id) {
+    |                                            ^^^^^^^ method not found in `Renderer`
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:126:38
+    |
+126 |                      engine.renderer.set_active_sdf(Some(asset_id));
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `has_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:133:48
+    |
+133 |                      } else if engine.renderer.has_sdf(asset_id) {
+    |                                                ^^^^^^^ method not found in `Renderer`
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:143:38
+    |
+143 |                      engine.renderer.set_active_sdf(None);
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `has_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:156:48
+    |
+156 |                  let has_sdf = engine.renderer.has_sdf(asset_id);
+    |                                                ^^^^^^^ method not found in `Renderer`
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:161:38
+    |
+161 |                      engine.renderer.set_active_sdf(None);
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:163:38
+    |
+163 |                      engine.renderer.set_active_sdf(Some(asset_id));
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `has_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:174:48
+    |
+174 |                  let has_sdf = engine.renderer.has_sdf(asset_id);
+    |                                                ^^^^^^^ method not found in `Renderer`
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:179:38
+    |
+179 |                      engine.renderer.set_active_sdf(None);
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `set_active_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:181:38
+    |
+181 |                      engine.renderer.set_active_sdf(Some(asset_id));
+    |                                      ^^^^^^^^^^^^^^
+    |
+help: there is a method `clear_active_sdf` with a similar name, but with different arguments
+   --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\asset_management.rs:130:5
+    |
+130 |     pub fn clear_active_sdf(&mut self) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `has_sdf` found for struct `Renderer` in the current scope
+   --> src\lib.rs:203:39
+    |
+203 |         let has_sdf = engine.renderer.has_sdf(asset_id);
+    |                                       ^^^^^^^ method not found in `Renderer`
+
+error[E0609]: no field `active_sdf` on type `DebugState`
+   --> src\lib.rs:250:19
+    |
+250 |             state.active_sdf.map(|id| id.to_string()).unwrap_or("null".to_string()),
+    |                   ^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `view_mode`, `active_splat`, `active_volume`, `camera_pos`, `camera_yaw`, `camera_pitch`
+
+error[E0282]: type annotations needed
+   --> src\lib.rs:250:35
+    |
+250 |             state.active_sdf.map(|id| id.to_string()).unwrap_or("null".to_string()),
+    |                                   ^^  -- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+250 |             state.active_sdf.map(|id: /* Type */| id.to_string()).unwrap_or("null".to_string()),
+    |                                     ++++++++++++
+
+Some errors have detailed explanations: E0282, E0599, E0609.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `gve_wasm` (lib) due to 16 previous errors

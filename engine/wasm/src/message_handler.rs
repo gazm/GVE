@@ -1,63 +1,60 @@
-use shared::{MessageType, MessageHeader, GVEBinaryHeader, GVE_MAGIC};
+use shared::{MessageType, MessageHeader};
+use shared::binary_format::{GVE3Header, ChunkHeader, GVE3_MAGIC, chunk_id, align_to_16};
 use crate::wasm_engine::WasmEngine;
 
-/// Debug: inspect GVE binary header to understand why volume isn't loading
+/// Debug: inspect GVE3 binary header + chunks
 #[cfg(debug_assertions)]
 fn debug_gve_header(payload: &[u8]) {
-    if payload.len() < std::mem::size_of::<GVEBinaryHeader>() {
-        web_sys::console::warn_1(&"Payload too small for GVE header".into());
+    let hdr_size = std::mem::size_of::<GVE3Header>();
+    let chunk_hdr_size = std::mem::size_of::<ChunkHeader>();
+
+    if payload.len() < hdr_size {
+        web_sys::console::warn_1(&"Payload too small for GVE3 header".into());
         return;
     }
-    
-    let header: &GVEBinaryHeader = bytemuck::from_bytes(&payload[..std::mem::size_of::<GVEBinaryHeader>()]);
-    
-    // Check magic
-    if &header.magic != GVE_MAGIC {
-        web_sys::console::error_1(&format!("❌ Invalid magic: {:?}", header.magic).into());
+
+    let header: &GVE3Header = bytemuck::from_bytes(&payload[..hdr_size]);
+
+    if header.magic != GVE3_MAGIC {
+        web_sys::console::error_1(&format!("\u{274c} Invalid magic: {:?} (expected GVE3)", header.magic).into());
         return;
     }
-    
-    // Copy fields from packed struct to avoid unaligned access
-    let version = header.version;
-    let volume_offset = header.volume_data_offset;
-    let volume_size = header.volume_size;
-    let shell_offset = header.shell_mesh_offset;
-    let vertex_count = header.vertex_count;
-    let triplanar_offset = header.triplanar_offset;
-    
+
+    let chunk_count = header.chunk_count;
     web_sys::console::log_1(&format!(
-        "🔍 GVE Header Debug:\n  version={:#x}\n  volume_offset={}\n  volume_size={}\n  shell_offset={}\n  vertex_count={}\n  triplanar_offset={}",
-        version, volume_offset, volume_size, shell_offset, vertex_count, triplanar_offset
+        "\u{1f50d} GVE3 Header: version={:#x}, chunks={}",
+        header.version, chunk_count
     ).into());
-    
-    // Check if volume data exists
-    if volume_offset > 0 && volume_size > 0 {
+
+    let mut cursor = hdr_size;
+    for i in 0..chunk_count as usize {
+        if cursor + chunk_hdr_size > payload.len() { break; }
+        let chunk_hdr: &ChunkHeader = bytemuck::from_bytes(&payload[cursor..cursor + chunk_hdr_size]);
+        let fourcc = String::from_utf8_lossy(&chunk_hdr.fourcc);
+        let size = chunk_hdr.size;
         web_sys::console::log_1(&format!(
-            "🔍 Volume data: offset={} size={} (expected at bytes {}..{})",
-            volume_offset, volume_size, volume_offset, volume_offset + volume_size as u64
+            "  \u{1f4e6} Chunk {}: {} ({} bytes)", i, fourcc, size
         ).into());
-        
-        // Peek at first 40 bytes of volume data (header)
-        let vol_start = volume_offset as usize;
-        let vol_end = vol_start + 40.min(volume_size as usize);
-        if vol_end <= payload.len() {
-            let vol_header = &payload[vol_start..vol_end];
-            let dims = [
-                u32::from_le_bytes([vol_header[0], vol_header[1], vol_header[2], vol_header[3]]),
-                u32::from_le_bytes([vol_header[4], vol_header[5], vol_header[6], vol_header[7]]),
-                u32::from_le_bytes([vol_header[8], vol_header[9], vol_header[10], vol_header[11]]),
-            ];
-            let uncompressed = u32::from_le_bytes([vol_header[36], vol_header[37], vol_header[38], vol_header[39]]);
-            web_sys::console::log_1(&format!(
-                "🔍 Volume header: dims={}x{}x{}, uncompressed_size={}",
-                dims[0], dims[1], dims[2], uncompressed
-            ).into());
+
+        // Extra volume debug
+        if chunk_hdr.fourcc == chunk_id::VOLM {
+            let data_start = cursor + chunk_hdr_size;
+            if data_start + 40 <= payload.len() && size >= 40 {
+                let vol = &payload[data_start..];
+                let dims = [
+                    u32::from_le_bytes([vol[0], vol[1], vol[2], vol[3]]),
+                    u32::from_le_bytes([vol[4], vol[5], vol[6], vol[7]]),
+                    u32::from_le_bytes([vol[8], vol[9], vol[10], vol[11]]),
+                ];
+                let uncompressed = u32::from_le_bytes([vol[36], vol[37], vol[38], vol[39]]);
+                web_sys::console::log_1(&format!(
+                    "    \u{1f50d} Volume: dims={}x{}x{}, uncompressed={}",
+                    dims[0], dims[1], dims[2], uncompressed
+                ).into());
+            }
         }
-    } else {
-        web_sys::console::warn_1(&format!(
-            "⚠️ No volume data in header: offset={}, size={}",
-            volume_offset, volume_size
-        ).into());
+
+        cursor = cursor + chunk_hdr_size + align_to_16(size) as usize;
     }
 }
 

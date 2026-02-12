@@ -5,56 +5,11 @@
 
 use glam::Mat4;
 use super::pipeline::Renderer;
-use super::types::{LoadedSDF, LoadedMesh, LoadedVolume, SDFUniforms, VolumeUniforms, Uniforms};
+use super::types::{LoadedMesh, LoadedVolume, VolumeUniforms, Uniforms};
 use super::math::calculate_manual_camera;
 
 impl Renderer {
-    /// Render SDF via raymarching (writes color + depth buffer)
-    pub(crate) fn render_sdf(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, sdf: &LoadedSDF, aspect: f32) {
-        let (view_proj, eye) = calculate_manual_camera(aspect, self.camera_pos, self.camera_yaw, self.camera_pitch);
-        let inv_view_proj = view_proj.inverse();
-
-        // Update SDF uniforms (includes view_proj for frag_depth)
-        let uniforms = SDFUniforms {
-            inv_view_proj: inv_view_proj.to_cols_array_2d(),
-            view_proj: view_proj.to_cols_array_2d(),
-            camera_pos: eye.to_array(),
-            time: 0.0,
-            resolution: [self.width as f32, self.height as f32],
-            instruction_count: sdf.instruction_count,
-            _pad: 0,
-        };
-        self.queue.write_buffer(&self.sdf_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("SDF Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.15, b: 0.2, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-
-            render_pass.set_pipeline(&self.sdf_pipeline);
-            // Use cached bind group from LoadedSDF (no per-frame allocation!)
-            render_pass.set_bind_group(0, &sdf.bind_group, &[]);
-            render_pass.draw(0..3, 0..1);  // Fullscreen triangle
-        }
-    }
+    // SDF Render Function REMOVED (v2.3)
 
     /// Render volume via dense grid raymarching
     pub(crate) fn render_volume(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, volume: &LoadedVolume, aspect: f32) {
@@ -62,7 +17,7 @@ impl Renderer {
         let inv_view_proj = view_proj.inverse();
 
         // Update volume uniforms with bounds and triplanar flag from loaded volume
-        let uniforms = VolumeUniforms {
+        let mut uniforms = VolumeUniforms {
             inv_view_proj: inv_view_proj.to_cols_array_2d(),
             camera_pos: eye.to_array(),
             _pad0: 0.0,
@@ -72,12 +27,23 @@ impl Renderer {
             _pad2: 0.0,
             view_proj: view_proj.to_cols_array_2d(),
             use_triplanar: if volume.has_triplanar { 1 } else { 0 },
+            _pad_tri: [0.0, 0.0, 0.0],
             triplanar_bounds_min: volume.triplanar_bounds_min,
-            _pad3: 0.0,
+            active_op_count: volume.patches.len() as u32,
             triplanar_bounds_max: volume.triplanar_bounds_max,
             _pad4: 0.0,
-            _pad_end: [0.0, 0.0, 0.0],
+            ops: [crate::renderer::types::RuntimeVolumeOp {
+                op_type: 0, _pad0: [0;3], pos: [0.0;3], _pad1: 0, 
+                params: [0.0; 8], aabb_min: [0.0;3], _pad2: 0, aabb_max: [0.0;3], _pad3: 0 
+            }; 16],
         };
+
+        // Copy active patches
+        for (i, patch) in volume.patches.iter().enumerate() {
+            if i < 16 {
+                uniforms.ops[i] = *patch;
+            }
+        }
         self.queue.write_buffer(&self.volume_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
         {

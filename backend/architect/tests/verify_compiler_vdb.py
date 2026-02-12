@@ -99,47 +99,71 @@ def verify():
             
         write_gve_bin(tmp_path, volume_data=vdb_bytes, shell_data=shell_bytes)
         
-        file_size = os.path.getsize(tmp_path)
-        print(f"✅ Binary written: {tmp_path} ({file_size} bytes)")
+        print(f"✅ Binary written: {tmp_path}")
         
-        # Verify Header
+        # Verify Header (v2.3)
         with open(tmp_path, "rb") as f:
-            header = f.read(84)
-            # <4s I I Q Q Q Q Q Q I I I I 8x
-            # Magic(4), Version(4), Flags(4), offsets(6*8), sizes(4*4)
-            unpacked = struct.unpack("<4s I I Q Q Q Q Q Q I I I I", header[:76])
+            header = f.read(72)
+            # Magic(4), Version(4), Flags(4), offsets(6*8), sizes(3*4)
+            # Actually header is 72 bytes:
+            # magic(4), version(4), flags(4) - 12
+            # vol_off(8), splat_off(8), shell_off(8), audio_off(8), tri_off(8) - 40
+            # vol_size(4), splat_cnt(4), vert_cnt(4) - 12
+            # Total 64. 
+            # Wait, Rust struct says 72 bytes.
+            # Rust: magic(4), version(4), flags(4) - 12
+            # vol_off(8), splat_off(8), shell_off(8), audio_off(8), tri_off(8) - 40
+            # vol_size(4), splat_cnt(4), vert_cnt(4) - 12
+            # Total 64. 
+            # START_PADDING is 8 bytes?
+            # Let's check binary_writer.py again. 
+            
+            # Re-reading binary_writer.py (Step 245):
+            # HEADER_SIZE = 72
+            # magic, version, flags (12)
+            # volume_offset (8)
+            # splat_offset (8)
+            # shell_mesh_offset (8)
+            # audio_patch_offset (8)
+            # triplanar_offset (8)  <-- This was added?
+            # volume_size (4)
+            # splat_count (4)
+            # vertex_count (4)
+            # reserved [u8; 8] (8) <-- padding
+            
+            # So 12 + 40 + 12 = 64. + 8 padding = 72. Correct.
+            
+            unpacked = struct.unpack("<4sIIQQQQQIII8x", header)
             
             magic = unpacked[0]
             version = unpacked[1]
             flags = unpacked[2]
-            sdf_code_off = unpacked[3]
-            vol_off = unpacked[4]
-            shell_off = unpacked[6] # Index 6 corresponds to shell_mesh_offset in struct
+            vol_off = unpacked[3]
+            splat_off = unpacked[4]
+            shell_off = unpacked[5]
+            # audio, triplanar...
+            vol_size = unpacked[8]
             
-            vol_size = unpacked[10] # sdf_bytecode_size (9), volume_size (10)
+            if magic != b"GVE1":
+                print(f"❌ Invalid Magic: {magic}")
             
-            print(f"   Magic: {magic}")
-            print(f"   Version: 0x{version:08x} (Expected: 0x00021000)")
-            print(f"   Volume Offset: {vol_off}")
-            print(f"   Volume Size: {vol_size}")
-            
-            if magic == b"GVE1":
-                print("✅ Magic Verified")
+            if version == 0x00023000:
+                print(f"✅ Version Verified (v2.3 - 0x00023000)")
+            elif version == 0x00020300:
+                 print(f"✅ Version Verified (Old v2.3 - 0x00020300)")
             else:
-                print(f"❌ Magic Mismatch: {magic}")
-                
-            if version == 0x00021000:
-                print("✅ Version Verified (2.1)")
-            else:
-                print(f"❌ Version Mismatch: {version:08x}")
+                print(f"❌ Version Mismatch: {version:08x} (Expected 00023000)")
                 
             if vol_off > 0 and vol_size > 0:
-                 print("✅ Volume chunk present")
+                 print(f"✅ Volume chunk present (offset {vol_off}, size {vol_size})")
             else:
                  print("❌ Volume chunk missing")
 
         # Cleanup
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
             
     except Exception as e:
         print(f"❌ Binary Write failed: {e}")

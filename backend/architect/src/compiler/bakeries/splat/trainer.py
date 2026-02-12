@@ -405,119 +405,7 @@ def farthest_point_sample_weighted(
     return points[selected_indices]
 
 
-# ============================================================================
-# Legacy Poisson Disk Sampling (slower, kept for reference)
-# ============================================================================
-
-def initialize_splats_poisson(
-    sdf_fn: Callable[[torch.Tensor], torch.Tensor],
-    bounds: Tuple[List[float], List[float]],
-    target_count: int = 10000,
-    min_radius: float = 0.02,
-    k_candidates: int = 30,
-    device: str = "cpu",
-    attrs_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
-    """
-    Generate initial splat positions using Poisson disk sampling on SDF surface.
-    Returns: (positions, attributes, avg_spacing)
-    
-    NOTE: This is slower than initialize_splats_batched on GPU due to sequential
-    point-by-point processing. Kept for compatibility and CPU fallback.
-    """
-    min_xyz = torch.tensor(bounds[0], dtype=torch.float32, device=device)
-    max_xyz = torch.tensor(bounds[1], dtype=torch.float32, device=device)
-    extent = max_xyz - min_xyz
-    
-    # Grid for spatial lookup (kept on CPU for dict operations)
-    cell_size = min_radius / np.sqrt(3)
-    grid_dims = (extent / cell_size).ceil().int().cpu().tolist()
-    grid = {}  # (i, j, k) -> point index
-    
-    points: List[torch.Tensor] = []
-    active: List[int] = []
-    
-    # helper functions - use CPU for grid lookups
-    def get_cell(p: torch.Tensor) -> Tuple[int, int, int]:
-        cell = ((p.cpu() - min_xyz.cpu()) / cell_size).int()
-        return tuple(cell.tolist())
-    
-    def is_valid(p: torch.Tensor) -> bool:
-        cell = get_cell(p)
-        for di in range(-2, 3):
-            for dj in range(-2, 3):
-                for dk in range(-2, 3):
-                    neighbor = (cell[0] + di, cell[1] + dj, cell[2] + dk)
-                    if neighbor in grid:
-                        idx = grid[neighbor]
-                        if torch.norm(p - points[idx]) < min_radius:
-                            return False
-        return True
-    
-    # Find initial point
-    print(f"      [poisson] Finding initial surface point on {device}...", flush=True)
-    initial_p = (min_xyz + max_xyz) / 2
-    initial_p = initial_p.unsqueeze(0)
-    initial_p = project_to_surface(sdf_fn, initial_p)[0]
-    print(f"      [poisson] Initial point found, starting sampling loop...", flush=True)
-    
-    points.append(initial_p)
-    active.append(0)
-    grid[get_cell(initial_p)] = 0
-    
-    # Sampling loop with progress logging
-    last_log = 0
-    while active and len(points) < target_count:
-        # Log progress every 500 points
-        if len(points) - last_log >= 500:
-            print(f"      [poisson] Sampled {len(points)}/{target_count} points...", flush=True)
-            last_log = len(points)
-        active_idx = np.random.randint(len(active))
-        base_idx = active[active_idx]
-        base_point = points[base_idx]
-        
-        found = False
-        for _ in range(k_candidates):
-            # Generate random direction on device
-            direction = torch.randn(3, device=device)
-            direction = F.normalize(direction, dim=0)
-            distance = min_radius * (1 + np.random.random())
-            candidate = base_point + direction * distance
-            
-            if (candidate < min_xyz).any() or (candidate > max_xyz).any():
-                continue
-            
-            candidate = candidate.unsqueeze(0)
-            candidate = project_to_surface(sdf_fn, candidate)[0]
-            
-            if is_valid(candidate):
-                idx = len(points)
-                points.append(candidate)
-                active.append(idx)
-                grid[get_cell(candidate)] = idx
-                found = True
-                break
-        
-        if not found:
-            active.pop(active_idx)
-    
-    positions = torch.stack(points)
-    
-    # Query material attributes (color[3] + metallic + roughness = 5 channels)
-    attrs_source = attrs_fn if attrs_fn is not None else sdf_fn
-    if hasattr(attrs_source, "query_attributes"):
-        if device == "cuda" and attrs_fn is not None:
-            attrs = attrs_source.query_attributes(positions.cpu()).to(device)
-        else:
-            attrs = attrs_source.query_attributes(positions)
-    else:
-        default = torch.tensor([0.627, 0.0, 0.0, 0.0, 0.5], dtype=torch.float32, device=device)
-        attrs = default.unsqueeze(0).expand(len(positions), 5)
-        
-    print(f"    [splat_trainer] Poisson sampling: {len(points)} splats on {device}", flush=True)
-    # Estimate spacing from cell_size (approximate)
-    avg_spacing = min_radius 
-    return positions, attrs, avg_spacing
+# Legacy Poisson Disk Sampling removed (v2.3) - initialize_splats_batched is faster on CPU too.
 
 
 
@@ -1325,15 +1213,10 @@ def compile_splats(
             sdf_fn = sdf_fn.to(device)
             print(f"    [splat_trainer] 📦 Moved SDF graph to {device}", flush=True)
         
-        # Use fast batched init on GPU, sequential Poisson on CPU
-        if device == "cuda":
-            positions, attrs, avg_spacing = initialize_splats_batched(
-                sdf_fn, bounds, target_count=target_count, device=device, attrs_fn=attrs_fn
-            )
-        else:
-            positions, attrs, avg_spacing = initialize_splats_poisson(
-                sdf_fn, bounds, target_count=target_count, device=device, attrs_fn=attrs_fn
-            )
+        # Use fast batched init (works on CPU too, just slower than GPU)
+        positions, attrs, avg_spacing = initialize_splats_batched(
+            sdf_fn, bounds, target_count=target_count, device=device, attrs_fn=attrs_fn
+        )
         print(f"    [splat_trainer] 2. Initialized {len(positions)} splats, starting optimization...", flush=True)
         
         # Use computed average spacing (smaller to reduce over-blur)

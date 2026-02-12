@@ -1,0 +1,29 @@
+warning: field `default_mesh` is never read
+  --> C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime\src\renderer\pipeline.rs:57:16
+   |
+41 | ...ct Renderer {
+   |       -------- field in this struct
+...
+57 | ...crate) default_mesh: L...
+   |           ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gve_runtime` (lib) generated 1 warning
+    Checking gve_wasm v0.1.0 (C:\Users\Admin\Documents\OG\Projects\GVE\engine\wasm)
+warning: unused variable: `engine`
+  --> src\lib.rs:93:22
+   |
+93 |     with_engine_mut(|engine| {
+   |                      ^^^^^^ help: if this is intentional, prefix it with an underscore: `_engine`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `has_sdf`
+   --> src\lib.rs:197:13
+    |
+197 |         let has_sdf = false; // engine.renderer.has_sdf(asset_id);
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_has_sdf`
+
+warning: `gve_wasm` (lib) generated 2 warnings (run `cargo fix --lib -p gve_wasm` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.56s

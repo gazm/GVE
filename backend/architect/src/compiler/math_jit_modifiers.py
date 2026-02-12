@@ -78,6 +78,25 @@ class TwistModifier(DomainWarpNode):
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 1)
         self.rate = rate
         
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Calculate perpendicular distance to axis for Lipschitz correction
+        if self.axis_idx == 0: perp = x[:, [1, 2]]
+        elif self.axis_idx == 1: perp = x[:, [0, 2]]
+        else: perp = x[:, [0, 1]]
+        
+        r = torch.norm(perp, dim=1)
+        # Correction: twisting expands space by sqrt(1 + (r*rate)^2)
+        # We must scale distance by the reciprocal to maintain Lipschitz <= 1.0
+        correction = 1.0 / torch.sqrt(1.0 + (r * self.rate)**2)
+        
+        warped_x = self.warp(x)
+        res = self.child(warped_x)
+        
+        if isinstance(res, tuple):
+            dist, attrs = res
+            return dist * correction, attrs
+        return res * correction
+
     def warp(self, x: torch.Tensor) -> torch.Tensor:
         axis_val = x[:, self.axis_idx]
         angle = axis_val * self.rate
@@ -104,6 +123,24 @@ class BendModifier(DomainWarpNode):
         self.axis_idx = AXIS_INDEX.get(axis.lower(), 0)
         self.k = angle
         
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Bend as implemented is a vertical-dependent tilt/roll.
+        # It expands space significantly. We use a conservative correction.
+        # Max stretching is approx 1 + |k * r|
+        if self.axis_idx == 0: r = torch.norm(x[:, [1, 2]], dim=1)
+        elif self.axis_idx == 1: r = torch.norm(x[:, [0, 2]], dim=1)
+        else: r = torch.norm(x[:, [0, 1]], dim=1)
+        
+        correction = 1.0 / (1.0 + torch.abs(r * self.k))
+        
+        warped_x = self.warp(x)
+        res = self.child(warped_x)
+        
+        if isinstance(res, tuple):
+            dist, attrs = res
+            return dist * correction, attrs
+        return res * correction
+
     def warp(self, x: torch.Tensor) -> torch.Tensor:
         if self.axis_idx == 0:
             c = torch.cos(self.k * x[:, 1])
@@ -147,7 +184,45 @@ class TaperModifier(DomainWarpNode):
         self.register_buffer("_axis_min", torch.tensor(axis_min, dtype=torch.float32))
         self.register_buffer("_axis_max", torch.tensor(axis_max, dtype=torch.float32))
 
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Calculate local scale factor
+        axis_val = x[:, self.axis_idx]
+        axis_min = self._axis_min.to(x.device)
+        axis_max = self._axis_max.to(x.device)
+        extent = axis_max - axis_min + 1e-8
+        t = (axis_val - axis_min) / extent
+        t = _smoothstep(t)
+
+        scale = self.scale_min + t * (self.scale_max - self.scale_min)
+        scale = torch.clamp(scale, min=1e-4).unsqueeze(1)
+        
+        # Warp domain
+        if self.axis_idx == 0:
+            warped_x = torch.stack([x[:, 0], x[:, 1] / scale.squeeze(), x[:, 2] / scale.squeeze()], dim=1)
+        elif self.axis_idx == 1:
+            warped_x = torch.stack([x[:, 0] / scale.squeeze(), x[:, 1], x[:, 2] / scale.squeeze()], dim=1)
+        else:
+            warped_x = torch.stack([x[:, 0] / scale.squeeze(), x[:, 1] / scale.squeeze(), x[:, 2]], dim=1)
+
+        # Evaluate child
+        res = self.child(warped_x)
+        if isinstance(res, tuple):
+            dist, attrs = res
+        else:
+            dist, attrs = res, None
+            
+        # Lipschitz correction: multiply distance by min(1.0, scale)
+        # When expanding space (scale < 1.0), we must reduce distance to avoid overstepping.
+        # When compressing space (scale > 1.0), distance is conservative (understepping) so we clamp to 1.0.
+        correction = torch.clamp(scale, max=1.0).squeeze(1)
+        dist = dist * correction
+        
+        if attrs is not None:
+            return dist, attrs
+        return dist
+
     def warp(self, x: torch.Tensor) -> torch.Tensor:
+        # Kept for compatibility / bounds computation helper
         axis_val = x[:, self.axis_idx]
         axis_min = self._axis_min.to(x.device)
         axis_max = self._axis_max.to(x.device)

@@ -42,18 +42,7 @@ window.toggle_axes = () => {
     gve_wasm.toggle_axes();
 };
 
-// Expose debug functions to window for console access
-window.load_test_sdf = () => {
-    if (!wasmEngineInitialized) {
-        console.warn("WASM not ready");
-        return;
-    }
-    gve_wasm.load_test_sdf();
-};
-window.clear_sdf = () => {
-    if (!wasmEngineInitialized) return;
-    gve_wasm.clear_sdf();
-};
+// Debug functions removed (v2.3)
 
 /**
  * Set the rendering view mode for the current asset.
@@ -79,6 +68,7 @@ window.set_view_mode = (mode) => {
                 modeNum = 0;
                 break;
             case 'sdf':
+            case 'volume': // 'sdf' now maps to volume
                 modeNum = 1;
                 break;
             case 'splat':
@@ -86,10 +76,8 @@ window.set_view_mode = (mode) => {
                 break;
             case 'textured':
             case 'final':
-                modeNum = 3;
-                break;
             case 'overlay':
-                modeNum = 4;
+                modeNum = 3;
                 break;
             default:
                 console.warn(`Unknown view mode: ${mode}`);
@@ -111,21 +99,20 @@ window.snap_camera_to = (x, y, z, yaw, pitch) => {
 
 /**
  * Get available view modes for the current or specified asset.
- * Returns { mesh: bool, sdf: bool, splat: bool, volume: bool }
- * WASM returns a packed bitmask u8: bit0=mesh, bit1=sdf, bit2=splat, bit3=volume
+ * Returns { mesh: bool, splat: bool, volume: bool }
+ * WASM returns a packed bitmask u8: bit0=mesh, bit1=volume, bit2=splat, bit3=volume(dup)
  */
 window.get_asset_modes = (assetId = null) => {
     if (!wasmEngineInitialized) {
         console.warn("WASM not ready");
-        return { mesh: false, sdf: false, splat: false, volume: false };
+        return { mesh: false, splat: false, volume: false };
     }
     const id = assetId || lastLoadedAsset.id;
     const bits = gve_wasm.get_asset_modes(id);
     const modes = {
         mesh: !!(bits & 0x01),
-        sdf: !!(bits & 0x02),
+        volume: !!(bits & 0x02), // Bit 1 now reused for volume
         splat: !!(bits & 0x04),
-        volume: !!(bits & 0x08),
     };
     console.log(`📊 Asset ${id} modes:`, modes);
     return modes;
@@ -457,6 +444,25 @@ function sendCameraUpdate(camera) {
     sendMessage(MSG_TYPE_UPDATE_CAMERA, new Uint8Array(payload.buffer), 0n, 1);
 }
 
+// Expose runtime patch API for testing
+window.addRuntimePatch = (opType, x, y, z, p0, p1, p2, p3) => {
+    if (!window.renderer || !window.wasmModule) {
+        console.error("Renderer not initialized");
+        return;
+    }
+    // Use active asset ID if available, otherwise 0
+    const assetId = window.activeAssetId || 0n;
+    window.wasmModule.add_runtime_patch(window.renderer, assetId, opType, x, y, z, p0, p1, p2, p3);
+    console.log(`💥 Added runtime patch: type=${opType} pos=[${x},${y},${z}]`);
+};
+
+window.clearRuntimePatches = () => {
+    if (!window.renderer || !window.wasmModule) return;
+    const assetId = window.activeAssetId || 0n;
+    window.wasmModule.clear_runtime_patches(window.renderer, assetId);
+    console.log("🧹 Cleared runtime patches");
+};
+
 window.load_chunk = (chunkId, x, z) => {
     const buffer = new ArrayBuffer(16);
     const view = new DataView(buffer);
@@ -647,7 +653,6 @@ function pollDebugInfo() {
                 (${frameTime.toFixed(1)}ms)
             </div>
             <div>Mode: ${info.view_mode}</div>
-            <div>SDF: ${fmtId(info.active_assets?.sdf)}</div>
             <div>Splat: ${fmtId(info.active_assets?.splat)}</div>
             <div>Vol: ${fmtId(info.active_assets?.volume)}</div>
             <div>Cam: ${info.camera?.pos ? info.camera.pos.map(v => Number(v).toFixed(1)).join(',') : '-'}</div>

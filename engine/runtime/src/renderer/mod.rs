@@ -35,7 +35,7 @@ mod splat_passes;      // Splat passes
 
 // Re-export public API
 pub use pipeline::Renderer;
-pub use types::{LoadedMesh, LoadedSDF, RenderConfig, Uniforms, SDFUniforms, GPUSDFInstruction, ViewMode};
+pub use types::{LoadedMesh, RenderConfig, Uniforms, ViewMode};
 pub use lod::LodManager;
 pub use math::{calculate_mvp, calculate_sdf_camera};
 

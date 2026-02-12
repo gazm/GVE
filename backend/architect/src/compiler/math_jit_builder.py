@@ -393,21 +393,8 @@ def build_node(node_data: Dict) -> nn.Module:
         else:
             return SphereNode(radius=0.0)
     
-    # Legacy format fallback
-    elif node_type == "sphere":
-        # Legacy nodes imply default material or encoded in node_data somehow?
-        # Assuming legacy nodes are just geometry for now unless we see color fields
-        # But for safety let's wrap them in default gray material so they don't turn orange
-        n = SphereNode(radius=node_data.get("radius", 1.0))
-        return MaterialNode(n) # Default gray
-    elif node_type == "box":
-        n = BoxNode(size=node_data.get("size", [1.0, 1.0, 1.0]))
-        return MaterialNode(n)
-    elif node_type == "union":
-        children = [build_node(c) for c in node_data.get("children", [])]
-        return UnionNode(children)
-        
-    # Super-fallback
+    # Unknown node type
+    print(f"⚠️ Unknown node type: {node_type}, handling as empty", flush=True)
     return MaterialNode(SphereNode(radius=0.0))
 
 

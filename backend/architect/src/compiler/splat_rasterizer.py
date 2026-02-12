@@ -49,22 +49,23 @@ def bake_triplanar_textures_oklab(
 ) -> TriplanarTextures:
     """
     Bake Oklab attributes into 3 orthogonal textures via Gaussian splatting.
-    Blends in Oklab, outputs sRGB uint8. Alpha = roughness.
+    Blends in Oklab, outputs sRGB uint8. Alpha = (roughness_4bit << 4) | metallic_4bit.
     """
     n_splats = len(positions)
     print(f"      [triplanar] Baking {n_splats} Oklab splats ({mode.value}) to 3×{resolution}×{resolution}...", flush=True)
     bounds_extent = bounds_max - bounds_min
-    bounds_center = (bounds_min + bounds_max) * 0.5
-    bounds_min = bounds_center - bounds_extent * 0.55
-    bounds_max = bounds_center + bounds_extent * 0.55
+    # Bounds expansion removed to match volume bounds (v2.3)
+    # bounds_center = (bounds_min + bounds_max) * 0.5
+    # bounds_min = bounds_center - bounds_extent * 0.55
+    # bounds_max = bounds_center + bounds_extent * 0.55
     bounds_extent = bounds_max - bounds_min
 
     normalized = (positions - bounds_min) / (bounds_extent + 1e-8)
     normalized_scales = bounds_extent / (bounds_extent + 1e-8)  # Unused for point mode but kept for compat
 
-    xy_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    xz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    yz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
+    xy_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
+    xz_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
+    yz_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
     xy_weight = np.zeros((resolution, resolution), dtype=np.float32)
     xz_weight = np.zeros((resolution, resolution), dtype=np.float32)
     yz_weight = np.zeros((resolution, resolution), dtype=np.float32)
@@ -85,15 +86,16 @@ def bake_triplanar_textures_oklab(
         a = np.clip(attrs_oklab[i, 1], -0.4, 0.4)
         b = np.clip(attrs_oklab[i, 2], -0.4, 0.4)
         roughness = np.clip(attrs_oklab[i, 4], 0.0, 1.0)
+        metallic = np.clip(attrs_oklab[i, 3], 0.0, 1.0)
 
         if mode == SplatBakeMode.POINT:
-            _splat_point_2d_oklab(xy_accum, xy_weight, px, py, sx, sy, L, a, b, roughness, resolution)
-            _splat_point_2d_oklab(xz_accum, xz_weight, px, pz, sx, sz, L, a, b, roughness, resolution)
-            _splat_point_2d_oklab(yz_accum, yz_weight, py, pz, sy, sz, L, a, b, roughness, resolution)
+            _splat_point_2d_oklab(xy_accum, xy_weight, px, py, sx, sy, L, a, b, roughness, metallic, resolution)
+            _splat_point_2d_oklab(xz_accum, xz_weight, px, pz, sx, sz, L, a, b, roughness, metallic, resolution)
+            _splat_point_2d_oklab(yz_accum, yz_weight, py, pz, sy, sz, L, a, b, roughness, metallic, resolution)
         else:
-            _splat_gaussian_2d_oklab(xy_accum, xy_weight, px, py, sx, sy, L, a, b, roughness, resolution)
-            _splat_gaussian_2d_oklab(xz_accum, xz_weight, px, pz, sx, sz, L, a, b, roughness, resolution)
-            _splat_gaussian_2d_oklab(yz_accum, yz_weight, py, pz, sy, sz, L, a, b, roughness, resolution)
+            _splat_gaussian_2d_oklab(xy_accum, xy_weight, px, py, sx, sy, L, a, b, roughness, metallic, resolution)
+            _splat_gaussian_2d_oklab(xz_accum, xz_weight, px, pz, sx, sz, L, a, b, roughness, metallic, resolution)
+            _splat_gaussian_2d_oklab(yz_accum, yz_weight, py, pz, sy, sz, L, a, b, roughness, metallic, resolution)
 
     xy = _finalize_texture_oklab(xy_accum, xy_weight)
     xz = _finalize_texture_oklab(xz_accum, xz_weight)
@@ -117,10 +119,10 @@ def _splat_gaussian_2d_oklab(
     weight: np.ndarray,
     cx: float, cy: float,
     sx: float, sy: float,
-    L: float, a: float, b: float, roughness: float,
+    L: float, a: float, b: float, roughness: float, metallic: float,
     resolution: int,
 ) -> None:
-    """Splat Oklab (L,a,b) and roughness using Gaussian-weighted accumulation."""
+    """Splat Oklab (L,a,b), roughness, metallic using Gaussian-weighted accumulation."""
     px = cx * resolution
     py = cy * resolution
     rx = max(sx * resolution * 3, 1.5)
@@ -143,6 +145,7 @@ def _splat_gaussian_2d_oklab(
             accum[yi, xi, 1] += a * w
             accum[yi, xi, 2] += b * w
             accum[yi, xi, 3] += roughness * w
+            accum[yi, xi, 4] += metallic * w
             weight[yi, xi] += w
 
 
@@ -151,7 +154,7 @@ def _splat_point_2d_oklab(
     weight: np.ndarray,
     cx: float, cy: float,
     sx: float, sy: float,
-    L: float, a: float, b: float, roughness: float,
+    L: float, a: float, b: float, roughness: float, metallic: float,
     resolution: int,
 ) -> None:
     """Splat Oklab (L,a,b) using Max-Weight (Voronoi) accumulation."""
@@ -194,6 +197,7 @@ def _splat_point_2d_oklab(
                 accum[yi, xi, 1] = a * w
                 accum[yi, xi, 2] = b * w
                 accum[yi, xi, 3] = roughness * w
+                accum[yi, xi, 4] = metallic * w
 
 
 
@@ -211,6 +215,7 @@ def _finalize_texture(
         result[:, :, c][mask] = np.round(np.clip(val, 0, 255)).astype(np.uint8)
 
     if alpha_is_roughness:
+        # Legacy path (unused now)
         val = (accum[:, :, 3][mask] / weight[mask]) * 255
         result[:, :, 3][mask] = np.round(np.clip(val, 0, 255)).astype(np.uint8)
     else:
@@ -273,6 +278,7 @@ def _splat_at_oklab(
     """Splat Oklab (L,a,b) and roughness with blend weight w at (cx, cy) and neighbors."""
     Lw, aw, bw = L * w, a * w, b * w
     rough_w = roughness * w
+    metal_w = metallic * w
     for dy in range(-_VOXEL_SPLAT_RADIUS, _VOXEL_SPLAT_RADIUS + 1):
         for dx in range(-_VOXEL_SPLAT_RADIUS, _VOXEL_SPLAT_RADIUS + 1):
             yi = cy + dy
@@ -282,11 +288,12 @@ def _splat_at_oklab(
                 accum[yi, xi, 1] += aw
                 accum[yi, xi, 2] += bw
                 accum[yi, xi, 3] += rough_w
+                accum[yi, xi, 4] += metal_w
                 weight[yi, xi] += w
 
 
 def _finalize_texture_oklab(accum: np.ndarray, weight: np.ndarray) -> np.ndarray:
-    """Blend Oklab accum, convert to sRGB, output uint8 RGBA. Alpha = roughness."""
+    """Blend Oklab accum, convert to sRGB, output uint8 RGBA. Alpha = (roughness << 4) | metallic."""
     from .oklab import oklab_to_srgb
 
     result = np.zeros((*accum.shape[:2], 4), dtype=np.uint8)
@@ -297,6 +304,13 @@ def _finalize_texture_oklab(accum: np.ndarray, weight: np.ndarray) -> np.ndarray
     b = accum[:, :, 2][mask] / weight[mask]
     rough = accum[:, :, 3][mask] / weight[mask]
     rough = np.power(np.clip(rough, 0.0, 1.0), _ROUGHNESS_SHINE_BIAS)
+    metal = accum[:, :, 4][mask] / weight[mask]
+    metal = np.clip(metal, 0.0, 1.0)
+    
+    # 4-bit packing: 0..15
+    rough_4 = np.round(rough * 15).astype(np.uint8)
+    metal_4 = np.round(metal * 15).astype(np.uint8)
+    packed_alpha = (rough_4 << 4) | metal_4
 
     oklab = torch.stack([
         torch.from_numpy(L.flatten()).float().clamp(0, 1),
@@ -307,7 +321,7 @@ def _finalize_texture_oklab(accum: np.ndarray, weight: np.ndarray) -> np.ndarray
     result[:, :, 0][mask] = np.round(np.clip(srgb[:, 0] * 255, 0, 255)).astype(np.uint8)
     result[:, :, 1][mask] = np.round(np.clip(srgb[:, 1] * 255, 0, 255)).astype(np.uint8)
     result[:, :, 2][mask] = np.round(np.clip(srgb[:, 2] * 255, 0, 255)).astype(np.uint8)
-    result[:, :, 3][mask] = np.round(np.clip(rough * 255, 0, 255)).astype(np.uint8)
+    result[:, :, 3][mask] = packed_alpha
 
     return result
 
@@ -319,7 +333,7 @@ def _bake_one_plane_cuda(
     res: int,
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Bake one triplanar plane (e.g. XY) on CUDA with batched Gaussian splat. Returns (accum, weight) as (res*res, 4) and (res*res). Uses _SPLAT_RADIUS_TEXELS and _SPLAT_GAUSSIAN_EXP."""
+    """Bake one triplanar plane (e.g. XY) on CUDA with batched Gaussian splat. Returns (accum, weight) as (res*res, 5) and (res*res). Uses _SPLAT_RADIUS_TEXELS and _SPLAT_GAUSSIAN_EXP."""
     # (cx, cy) in [0,1]; convert to texel space
     px = cx * res
     py = cy * res
@@ -345,14 +359,15 @@ def _bake_one_plane_cuda(
     a = attrs[:, 1].clamp(-0.4, 0.4).unsqueeze(1)
     b = attrs[:, 2].clamp(-0.4, 0.4).unsqueeze(1)
     rough = attrs[:, 4].clamp(0.0, 1.0).unsqueeze(1)
-    value = torch.stack([L * w, a * w, b * w, rough * w], dim=2)  # (N, 169, 4)
+    metal = attrs[:, 3].clamp(0.0, 1.0).unsqueeze(1)
+    value = torch.stack([L * w, a * w, b * w, rough * w, metal * w], dim=2)  # (N, 169, 5)
     # Flatten
     index_flat = index_flat.reshape(-1)
-    value = value.reshape(-1, 4)
+    value = value.reshape(-1, 5)
     # Scatter add
-    accum = torch.zeros(res * res, 4, device=device, dtype=torch.float32)
+    accum = torch.zeros(res * res, 5, device=device, dtype=torch.float32)
     weight_accum = torch.zeros(res * res, device=device, dtype=torch.float32)
-    accum.scatter_add_(0, index_flat.unsqueeze(1).expand(-1, 4), value)
+    accum.scatter_add_(0, index_flat.unsqueeze(1).expand(-1, 5), value)
     weight_accum.scatter_add_(0, index_flat, w.reshape(-1))
     return accum, weight_accum
 
@@ -449,10 +464,11 @@ def _bake_one_plane_cuda_point(
     win_a = attrs[winner_n_idx, 1]
     win_b = attrs[winner_n_idx, 2]
     win_rough = attrs[winner_n_idx, 4]
+    win_metal = attrs[winner_n_idx, 3]
     
     # 5. Scatter to output
     # accum stores L*w, etc.
-    accum = torch.zeros(res * res, 4, device=device, dtype=torch.float32)
+    accum = torch.zeros(res * res, 5, device=device, dtype=torch.float32)
     weight_accum = torch.zeros(res * res, device=device, dtype=torch.float32)
     
     # We use simple indexing instead of scatter_add because indices are unique now
@@ -460,6 +476,7 @@ def _bake_one_plane_cuda_point(
     accum[winner_pixel_idx, 1] = win_a * winner_w
     accum[winner_pixel_idx, 2] = win_b * winner_w
     accum[winner_pixel_idx, 3] = win_rough * winner_w
+    accum[winner_pixel_idx, 4] = win_metal * winner_w
     weight_accum[winner_pixel_idx] = winner_w
     
     return accum, weight_accum
@@ -496,11 +513,11 @@ def bake_triplanar_from_voxel_oklab_cuda(
     ayz, wyz = fn(normalized[:, 1], normalized[:, 2], attrs_oklab, res, dev)
 
     # Reuse existing finalize + fill (no duplicated Oklab->sRGB logic)
-    xy_accum_np = axy.cpu().numpy().reshape(res, res, 4)
+    xy_accum_np = axy.cpu().numpy().reshape(res, res, 5)
     xy_weight_np = wxy.cpu().numpy().reshape(res, res)
-    xz_accum_np = axz.cpu().numpy().reshape(res, res, 4)
+    xz_accum_np = axz.cpu().numpy().reshape(res, res, 5)
     xz_weight_np = wxz.cpu().numpy().reshape(res, res)
-    yz_accum_np = ayz.cpu().numpy().reshape(res, res, 4)
+    yz_accum_np = ayz.cpu().numpy().reshape(res, res, 5)
     yz_weight_np = wyz.cpu().numpy().reshape(res, res)
 
     xy = _finalize_texture_oklab(xy_accum_np, xy_weight_np)
@@ -529,12 +546,14 @@ def _splat_at(
     g: float,
     b: float,
     roughness: float,
+    metallic: float,
     w: float,
     res: int,
 ) -> None:
     """Splat color (r,g,b) and roughness with blend weight w at (cx, cy) and neighbors."""
     rw, gw, bw = r * w, g * w, b * w
     rough_w = roughness * w
+    metal_w = metallic * w
     for dy in range(-_VOXEL_SPLAT_RADIUS, _VOXEL_SPLAT_RADIUS + 1):
         for dx in range(-_VOXEL_SPLAT_RADIUS, _VOXEL_SPLAT_RADIUS + 1):
             yi = cy + dy
@@ -544,6 +563,7 @@ def _splat_at(
                 accum[yi, xi, 1] += gw
                 accum[yi, xi, 2] += bw
                 accum[yi, xi, 3] += rough_w
+                accum[yi, xi, 4] += metal_w
                 weight[yi, xi] += w
 
 
@@ -558,7 +578,7 @@ def bake_triplanar_from_voxel_oklab(
 ) -> TriplanarTextures:
     """
     Bake voxel Oklab attributes into 3 orthogonal textures. Blends in Oklab,
-    outputs sRGB uint8. Alpha channel stores roughness.
+    outputs sRGB uint8. Alpha channel stores (roughness << 4) | metallic.
     When device=="cuda" and torch.cuda.is_available(), runs accumulation on GPU (same algorithm).
     """
     use_cuda = device == "cuda" and torch.cuda.is_available()
@@ -572,9 +592,9 @@ def bake_triplanar_from_voxel_oklab(
     bounds_extent = np.maximum(bounds_extent, 1e-8)
     normalized = (positions - bounds_min) / bounds_extent
 
-    xy_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    xz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
-    yz_accum = np.zeros((resolution, resolution, 4), dtype=np.float32)
+    xy_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
+    xz_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
+    yz_accum = np.zeros((resolution, resolution, 5), dtype=np.float32)
     xy_weight = np.zeros((resolution, resolution), dtype=np.float32)
     xz_weight = np.zeros((resolution, resolution), dtype=np.float32)
     yz_weight = np.zeros((resolution, resolution), dtype=np.float32)
@@ -593,13 +613,13 @@ def bake_triplanar_from_voxel_oklab(
         b = np.clip(attrs_oklab[i, 2], -0.4, 0.4)
         roughness = np.clip(attrs_oklab[i, 4], 0.0, 1.0)
         if mode == SplatBakeMode.POINT:
-            _splat_point_2d_oklab(xy_accum, xy_weight, px, py, splat_scale, splat_scale, L, a, b, roughness, resolution)
-            _splat_point_2d_oklab(xz_accum, xz_weight, px, pz, splat_scale, splat_scale, L, a, b, roughness, resolution)
-            _splat_point_2d_oklab(yz_accum, yz_weight, py, pz, splat_scale, splat_scale, L, a, b, roughness, resolution)
+            _splat_point_2d_oklab(xy_accum, xy_weight, px, py, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
+            _splat_point_2d_oklab(xz_accum, xz_weight, px, pz, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
+            _splat_point_2d_oklab(yz_accum, yz_weight, py, pz, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
         else:
-            _splat_gaussian_2d_oklab(xy_accum, xy_weight, px, py, splat_scale, splat_scale, L, a, b, roughness, resolution)
-            _splat_gaussian_2d_oklab(xz_accum, xz_weight, px, pz, splat_scale, splat_scale, L, a, b, roughness, resolution)
-            _splat_gaussian_2d_oklab(yz_accum, yz_weight, py, pz, splat_scale, splat_scale, L, a, b, roughness, resolution)
+            _splat_gaussian_2d_oklab(xy_accum, xy_weight, px, py, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
+            _splat_gaussian_2d_oklab(xz_accum, xz_weight, px, pz, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
+            _splat_gaussian_2d_oklab(yz_accum, yz_weight, py, pz, splat_scale, splat_scale, L, a, b, roughness, metallic, resolution)
 
     xy = _finalize_texture_oklab(xy_accum, xy_weight)
     xz = _finalize_texture_oklab(xz_accum, xz_weight)

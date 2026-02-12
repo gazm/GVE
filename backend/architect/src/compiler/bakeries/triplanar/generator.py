@@ -24,177 +24,12 @@ from ...splat_rasterizer import (
     pack_triplanar_textures,
     SplatBakeMode,
 )
-from ....librarian.finishes import get_finish
 
 # Chunk size for batch query_attributes on surface voxels
 _VOXEL_ATTRS_CHUNK = 50_000
 
-# Default attrs when no material: mid-gray Oklab, 0 metallic, 0.5 roughness
-_DEFAULT_ATTRS = np.array([0.627, 0.0, 0.0, 0.0, 0.5], dtype=np.float32)
-
-
-def _check_black_oxide_resolution() -> None:
-    """Verify black_oxide finish resolves to dark Oklab. Logs warning if not."""
-    from ...math_jit_builder import _resolve_material
-
-    finish = get_finish("black_oxide")
-    if not finish:
-        return
-    explicit_color = finish.get("base_color")  # e.g. "#0a0a0a"
-    oklab, _, _ = _resolve_material("METAL_STEEL", explicit_color)
-    L = oklab[0]
-    if L > 0.15:
-        print(
-            f"      [voxel-triplanar] ⚠️ black_oxide base_color={explicit_color!r} -> L={L:.3f} (expected <0.15)",
-            flush=True,
-        )
-    else:
-        print(f"      [voxel-triplanar] ✓ black_oxide -> L={L:.3f} (dark OK)", flush=True)
-
-
-def _resolve_attrs_from_dna_materials(
-    dna: dict,
-    node_bounds_list: List[Tuple[str, List[float], List[float]]],
-) -> np.ndarray:
-    """
-    Resolve dna.materials to (n_nodes, 5) attrs [L, a, b, metallic, roughness].
-
-    For each node_id in node_bounds_list, looks up dna["materials"].get(node_id);
-    resolves base_color (from entry or finish_id), roughness, metallic; converts
-    color to Oklab. Nodes not in materials get _DEFAULT_ATTRS.
-    """
-    from ...math_jit_builder import _parse_srgb_color, _resolve_material
-
-    materials = dna.get("materials") or {}
-    if not isinstance(materials, dict):
-        materials = {}
-    n_nodes = len(node_bounds_list)
-    out = np.tile(_DEFAULT_ATTRS, (n_nodes, 1))
-
-    # Verify black_oxide resolves to dark Oklab (material resolution check)
-    _check_black_oxide_resolution()
-
-    mat_keys = set(materials.keys())
-    node_ids = [nb[0] for nb in node_bounds_list]
-    missing = [nid for nid in node_ids if nid not in mat_keys]
-    extra = [k for k in mat_keys if k not in node_ids]
-    if missing or extra:
-        print(
-            f"      [voxel-triplanar] ⚠️ material key mismatch: "
-            f"nodes_not_in_materials={missing[:5]}{'...' if len(missing) > 5 else ''} "
-            f"materials_not_in_nodes={extra[:5]}{'...' if len(extra) > 5 else ''}",
-            flush=True,
-        )
-    for j in range(n_nodes):
-        node_id = node_bounds_list[j][0]
-        cfg = materials.get(node_id)
-        if not cfg:
-            continue
-        if hasattr(cfg, "model_dump"):
-            cfg = cfg.model_dump(exclude_none=True)
-        elif not isinstance(cfg, dict):
-            cfg = vars(cfg) if hasattr(cfg, "__dict__") else {}
-        finish = get_finish(cfg.get("finish_id")) if cfg.get("finish_id") else None
-        explicit_color = cfg.get("base_color")
-        if explicit_color is None and finish:
-            explicit_color = finish.get("base_color")
-        material_id = cfg.get("material_id", 0)
-        oklab_list, metallic, roughness = _resolve_material(material_id, explicit_color)
-        if cfg.get("roughness") is not None:
-            roughness = float(cfg["roughness"])
-        elif finish and finish.get("roughness") is not None:
-            roughness = float(finish["roughness"])
-        if cfg.get("metallic") is not None:
-            metallic = float(cfg["metallic"])
-        elif finish and finish.get("metallic") is not None:
-            metallic = float(finish["metallic"])
-        out[j, :3] = oklab_list
-        out[j, 3] = metallic
-        out[j, 4] = roughness
-        # Diagnostic: log when black/dark material resolves to unexpectedly light (L > 0.4)
-        L = oklab_list[0]
-        finish_id = cfg.get("finish_id")
-        is_expected_dark = (
-            finish_id in ("black_oxide", "painted_black")
-            or (explicit_color and str(explicit_color).strip().lower().startswith("#0"))
-        )
-        if is_expected_dark and L > 0.4:
-            print(
-                f"      [voxel-triplanar] ⚠️ node={node_id!r} expected dark but L={L:.3f} "
-                f"(finish={finish_id!r} base_color={explicit_color!r})",
-                flush=True,
-            )
-    return out
-
-
-def _assign_voxels_to_nodes(
-    positions_np: np.ndarray,
-    node_bounds_list: List[Tuple[str, List[float], List[float]]],
-    tol: float = 1e-6,
-) -> np.ndarray:
-    """
-    Assign each voxel (row index) to a node index. Returns (n_voxels,) int array:
-    node_index in [0, len(node_bounds_list)), or -1 if no node contains the point.
-    First node whose AABB contains the point wins; if none, -1.
-    """
-    n = positions_np.shape[0]
-    node_idx = np.full(n, -1, dtype=np.int32)
-    if not node_bounds_list:
-        return node_idx
-    bmins = np.array([bmin for _, bmin, _ in node_bounds_list], dtype=np.float32)
-    bmaxs = np.array([bmax for _, _, bmax in node_bounds_list], dtype=np.float32)
-    for j in range(len(node_bounds_list)):
-        inside = np.all(positions_np >= bmins[j] - tol, axis=1) & np.all(positions_np <= bmaxs[j] + tol, axis=1)
-        # Only assign where still unassigned
-        unassigned = node_idx < 0
-        node_idx[unassigned & inside] = j
-    return node_idx
-
-
-def _assign_outside_voxels_to_nearest_node(
-    positions_np: np.ndarray,
-    node_bounds_list: List[Tuple[str, List[float], List[float]]],
-    node_idx: np.ndarray,
-) -> None:
-    """
-    Assign voxels with node_idx == -1 to the nearest node by Euclidean distance
-    to AABB (closest point on box boundary). Modifies node_idx in place.
-    """
-    outside_mask = node_idx < 0
-    n_outside = int(np.sum(outside_mask))
-    if n_outside == 0 or not node_bounds_list:
-        return
-    outside_indices = np.where(outside_mask)[0]
-    outside_positions = positions_np[outside_indices]
-    n_nodes = len(node_bounds_list)
-    bmins = np.array([bmin for _, bmin, _ in node_bounds_list], dtype=np.float32)
-    bmaxs = np.array([bmax for _, _, bmax in node_bounds_list], dtype=np.float32)
-    dist = np.zeros((n_outside, n_nodes), dtype=np.float32)
-    for j in range(n_nodes):
-        closest = np.clip(outside_positions, bmins[j], bmaxs[j])
-        dist[:, j] = np.linalg.norm(outside_positions - closest, axis=1)
-    nearest = np.argmin(dist, axis=1)
-    node_idx[outside_indices] = nearest
-    print(
-        f"      [voxel-triplanar] nearest-AABB: {n_outside} outside voxels -> assigned to nearest node",
-        flush=True,
-    )
-
-
-def _apply_per_node_average(attrs_np: np.ndarray, node_idx: np.ndarray) -> None:
-    """
-    Replace each voxel's attributes with the mean (L,a,b, metallic, roughness) of its node.
-    Modifies attrs_np in place. Voxels with node_idx < 0 are left unchanged.
-    """
-    n_nodes = node_idx.max() + 1 if node_idx.size and node_idx.max() >= 0 else 0
-    if n_nodes <= 0:
-        return
-    for j in range(n_nodes):
-        mask = node_idx == j
-        if not np.any(mask):
-            continue
-        mean_attrs = np.mean(attrs_np[mask], axis=0)
-        attrs_np[mask] = mean_attrs
+# Default attrs when no material: Orange Oklab [0.75, 0.06, 0.12, 0.0, 0.5]
+_DEFAULT_ATTRS = np.array([0.75, 0.06, 0.12, 0.0, 0.3], dtype=np.float32)
 
 
 def _bake_triplanar_from_voxels(
@@ -237,8 +72,8 @@ def _bake_triplanar_from_voxels(
 
     attrs_fn = sdf_graph if hasattr(sdf_graph, "query_attributes") else None
     if attrs_fn is None:
-        default = np.array([[0.627, 0.0, 0.0, 0.0, 0.5]], dtype=np.float32)
-        attrs_np = np.tile(default, (n_surface, 1))
+        # Default Orange Oklab [0.75, 0.06, 0.12, 0.0, 0.5]
+        attrs_np = np.tile(_DEFAULT_ATTRS, (n_surface, 1))
     else:
         # Batch query_attributes (CPU or CUDA). On CUDA, TextureModifierNode no-ops so edge_wear/cavity_grime/rust are skipped.
         use_cuda = device == "cuda" and torch.cuda.is_available()
@@ -266,75 +101,10 @@ def _bake_triplanar_from_voxels(
                 uniq = np.unique(attrs_np[:, :3].round(decimals=4), axis=0)
                 print(f"      [voxel-triplanar] query_attributes vary: ~{len(uniq)} distinct (L,a,b)", flush=True)
 
-        # Per-node materials: when dna.materials exists, blend material base with query_attributes
-        # so edge_wear, cavity_grime, rust and procedural_texture from the graph are baked.
-        if dna is not None:
-            from ...math_jit_builder import collect_node_bounds
-            node_bounds_list = collect_node_bounds(dna)
-            if node_bounds_list and (dna.get("materials") or {}):
-                node_idx = _assign_voxels_to_nodes(positions_np, node_bounds_list)
-                _assign_outside_voxels_to_nearest_node(positions_np, node_bounds_list, node_idx)
-                n_assigned = int(np.sum(node_idx >= 0))
-                n_nodes = len(node_bounds_list)
-                node_attrs = _resolve_attrs_from_dna_materials(dna, node_bounds_list)
-                
-                # Check if sampled attributes are just the default gray (no procedural noise/texture)
-                # _DEFAULT_ATTRS = [0.627, 0.0, 0.0, 0.0, 0.5]
-                # We check the mean of the sampled batch to see if it's close to default.
-                mean_sampled = np.mean(attrs_np, axis=0)
-                is_default_gray = (
-                    abs(mean_sampled[0] - 0.627) < 0.01 and 
-                    abs(mean_sampled[1]) < 0.01 and 
-                    abs(mean_sampled[2]) < 0.01
-                )
-                
-                # If we have meaningful procedural variation (rust, grime, edge wear), we blend it.
-                # If it's just the default background from an empty graph, we skip blending to preserve the material.
-                if is_default_gray:
-                    # Check for variation (e.g. maybe mean is gray but there is noise?)
-                    # If std dev is low, it's flat gray.
-                    std_sampled = np.std(attrs_np[:, 0])
-                    if std_sampled < 0.001:
-                        query_blend = 0.0
-                        print(f"      [voxel-triplanar] Procedural attributes are default flat gray -> Using pure DNA material", flush=True)
-                    else:
-                        query_blend = 0.5
-                        print(f"      [voxel-triplanar] Procedural attributes have variation -> Blending 50%", flush=True)
-                else:
-                    query_blend = 0.5
-                    print(f"      [voxel-triplanar] Procedural attributes are colored -> Blending 50%", flush=True)
-
-                for j in range(n_nodes):
-                    mask = node_idx == j
-                    if np.any(mask):
-                        base = node_attrs[j : j + 1]  # (1, 5)
-                        sampled = attrs_np[mask]      # (M, 5)
-                        # If query_blend is 0, we just use base. 
-                        # If query_blend > 0, we mix.
-                        if query_blend <= 1e-5:
-                             attrs_np[mask] = base
-                        else:
-                            attrs_np[mask] = np.clip(
-                                base * (1.0 - query_blend) + sampled * query_blend,
-                                0.0,
-                                1.0,
-                            )
-                print(
-                    f"      [voxel-triplanar] dna.materials: {n_assigned}/{n_surface} voxels in {n_nodes} nodes (blend={query_blend:.0%} query)",
-                    flush=True,
-                )
-            elif node_bounds_list:
-                node_idx = _assign_voxels_to_nodes(positions_np, node_bounds_list)
-                _assign_outside_voxels_to_nearest_node(positions_np, node_bounds_list, node_idx)
-                n_assigned = int(np.sum(node_idx >= 0))
-                n_nodes = len(node_bounds_list)
-                _apply_per_node_average(attrs_np, node_idx)
-                print(f"      [voxel-triplanar] Per-node average: {n_assigned}/{n_surface} voxels in {n_nodes} nodes", flush=True)
-
     # attrs_np: (N, 5) [L, a, b, metallic, roughness] in Oklab. Bake blends in Oklab, outputs sRGB.
     use_cuda = device == "cuda" and torch.cuda.is_available()
     print(
-        f"      [voxel-triplanar] Baking {n_surface} voxel Oklab {'on CUDA' if use_cuda else ''} to 3×{resolution}×{resolution}...",
+        f"      [voxel-triplanar] Baking {n_surface} voxel Oklab {{'on CUDA' if use_cuda else ''}} to 3×{resolution}×{resolution}...",
         flush=True,
     )
     bake_mode = SplatBakeMode(mode) if mode in ("gaussian", "point") else SplatBakeMode.GAUSSIAN

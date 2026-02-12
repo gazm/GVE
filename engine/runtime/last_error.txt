@@ -1,0 +1,11 @@
+    Checking gve_runtime v0.1.0 (C:\Users\Admin\Documents\OG\Projects\GVE\engine\runtime)
+error[E0560]: struct `DebugState` has no field named `active_sdf`
+   --> src\renderer\pipeline.rs:456:13
+    |
+456 |             active_sdf: None,
+    |             ^^^^^^^^^^ `DebugState` does not have this field
+    |
+    = note: all struct fields are already assigned
+
+For more information about this error, try `rustc --explain E0560`.
+error: could not compile `gve_runtime` (lib) due to 1 previous error

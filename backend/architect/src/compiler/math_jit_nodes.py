@@ -46,7 +46,7 @@ class MaterialNode(GeometryNode):
         child: GeometryNode,
         color: List[float] = None,
         metallic: float = 0.0,
-        roughness: float = 0.5,
+        roughness: float = 0.3,
     ):
         super().__init__()
         self.child = child
@@ -119,7 +119,7 @@ class CSGNode(GeometryNode):
         # Attribute breakdown: [L, a, b, metallic, roughness]
         # Safety Orange Oklab approx: 0.7, 0.15, 0.15 (Rough approx, verify later)
         # Actually let's use the constant defined at top.
-        orange = torch.tensor(_DEFAULT_FALLBACK_COLOR + [0.0, 0.5], device=device)
+        orange = torch.tensor(_DEFAULT_FALLBACK_COLOR + [0.0, 0.3], device=device)
         
         for i, a in enumerate(attrs_list):
             if a is None:

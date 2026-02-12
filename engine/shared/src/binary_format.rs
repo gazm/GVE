@@ -176,3 +176,56 @@ pub struct SDFBytecodeHeader {
     pub bounds_max: [f32; 3],
     pub _reserved: u32,
 }
+
+// ============================================================================
+// GVE 3.0 - Chunk-Based Binary Format
+// ============================================================================
+
+/// Magic number for GVE 3.0 files
+pub const GVE3_MAGIC: [u8; 4] = *b"GVE3";
+
+/// GVE 3.0 File Header (16 bytes)
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct GVE3Header {
+    pub magic: [u8; 4],      // "GVE3"
+    pub version: u32,        // 0x00030000 for v3.0
+    pub chunk_count: u32,    // Number of chunks in file
+    pub _reserved: u32,      // Reserved for future use
+}
+
+const _: () = assert!(std::mem::size_of::<GVE3Header>() == 16);
+
+/// Chunk header (16 bytes, 16-byte aligned)
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct ChunkHeader {
+    pub fourcc: [u8; 4],     // Chunk type identifier
+    pub size: u64,           // Size of chunk data (excluding header/padding)
+    pub _reserved: u32,      // Reserved for flags/version
+}
+
+const _: () = assert!(std::mem::size_of::<ChunkHeader>() == 16);
+
+/// Standard chunk FourCC identifiers
+pub mod chunk_id {
+    pub const VOLM: [u8; 4] = *b"VOLM";
+    pub const MESH: [u8; 4] = *b"MESH";
+    pub const SPLT: [u8; 4] = *b"SPLT";
+    pub const TRIP: [u8; 4] = *b"TRIP";
+    pub const ROPS: [u8; 4] = *b"ROPS";
+    pub const META: [u8; 4] = *b"META";
+}
+
+/// Helper to calculate padding needed for 16-byte alignment
+#[inline]
+pub const fn align_to_16(size: u64) -> u64 {
+    (size + 15) & !15
+}
+
+/// Helper to calculate padding bytes
+#[inline]
+pub const fn padding_for_16(size: u64) -> u64 {
+    align_to_16(size) - size
+}
+

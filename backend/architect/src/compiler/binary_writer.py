@@ -1,52 +1,73 @@
 """
 Binary writer for .gve_bin files.
-Must match engine/shared/src/binary_format.rs GVEBinaryHeader
+GVE 3.0 Chunk-Based Format — must match engine/shared/src/binary_format.rs
+
+File layout:
+  [GVE3Header]  16 bytes: magic("GVE3") + version + chunk_count + reserved
+  [ChunkHeader] 16 bytes: fourcc + size(u64) + reserved
+  [Chunk Data]  N bytes
+  [Padding]     0-15 bytes (align to 16)
+  ... repeat for each chunk ...
 """
 import struct
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
+import io
 
-# Header constants - must match Rust
-GVE_MAGIC = b"GVE1"  # Changed from GVE\0 to match Rust
-HEADER_SIZE = 84      # 84 bytes to match Rust struct (not 64!)
+# GVE 3.0 constants
+GVE3_MAGIC = b"GVE3"
+GVE3_VERSION = 0x00030000  # v3.0
 
-# Header format (84 bytes total):
-# magic: [u8; 4]              - 4 bytes
-# version: u32                - 4 bytes  
-# flags: u32                  - 4 bytes
-# sdf_bytecode_offset: u64    - 8 bytes
-# sdf_texture_offset: u64     - 8 bytes
-# splat_data_offset: u64      - 8 bytes
-# shell_mesh_offset: u64      - 8 bytes
-# audio_patch_offset: u64     - 8 bytes
-# metadata_offset: u64        - 8 bytes
-# sdf_bytecode_size: u32      - 4 bytes
-# sdf_texture_size: u32       - 4 bytes
-# splat_count: u32            - 4 bytes
-# vertex_count: u32           - 4 bytes
-# _padding: [u8; 8]           - 8 bytes
-# Total: 4+4+4+(6*8)+(4*4)+8 = 84 bytes
+# Header: magic(4) + version(4) + chunk_count(4) + reserved(4) = 16
+GVE3_HEADER_FMT = "<4sIII"
+GVE3_HEADER_SIZE = 16
 
-HEADER_FMT = "<4s I I Q Q Q Q Q Q I I I I 8x"
+# Chunk header: fourcc(4) + size(8) + reserved(4) = 16
+CHUNK_HEADER_FMT = "<4sQI"
+CHUNK_HEADER_SIZE = 16
+
+# Standard chunk FourCC IDs (must match binary_format.rs chunk_id)
+CHUNK_VOLM = b"VOLM"  # Volume VDB data (LZ4 compressed)
+CHUNK_MESH = b"MESH"  # Shell mesh (vertices + indices)
+CHUNK_SPLT = b"SPLT"  # Gaussian splat data
+CHUNK_TRIP = b"TRIP"  # Triplanar textures
+CHUNK_ROPS = b"ROPS"  # Runtime operations (baked patches)
+CHUNK_META = b"META"  # Metadata
+
+
+def _pad_to_16(size: int) -> int:
+    """Calculate padding bytes needed for 16-byte alignment."""
+    return (16 - (size % 16)) % 16
+
+
+def _write_chunk(f, fourcc: bytes, data: bytes):
+    """Write a single chunk: header + data + padding."""
+    chunk_header = struct.pack(CHUNK_HEADER_FMT, fourcc, len(data), 0)
+    f.write(chunk_header)
+    f.write(data)
+    padding = _pad_to_16(len(data))
+    if padding > 0:
+        f.write(b"\x00" * padding)
 
 
 class GVEBinaryWriter:
     """
-    Writes .gve_bin files according to engine/shared/src/binary_format.rs
+    Writes .gve_bin files in GVE 3.0 chunk-based format.
+    See engine/shared/src/binary_format.rs
     """
-    VERSION = 0x00022000  # v2.2 - Triplanar texture support
     
     def __init__(self, path: Path):
         self.path = path
-        self.shell_vertices = b""   # Raw vertex data
-        self.shell_indices = b""    # Raw index data  
-        self.sdf_bytecode = b""     # SDF instruction bytecode
-        self.volume_data = b""      # VDB Grid data
-        self.splat_data = b""       # Gaussian splat data
-        self.triplanar_data = b""   # Triplanar textures (for SdfTextured mode)
+        self.shell_vertices = b""
+        self.shell_indices = b""
+        self.volume_data = b""
+        self.splat_data = b""
+        self.triplanar_data = b""
+        self.runtime_ops_data = b""
         self.vertex_count = 0
         self.index_count = 0
         self.splat_count = 0
+        self.runtime_ops_count = 0
         self.flags = 0
         
     def set_shell_mesh(self, vertices: bytes, indices: bytes, vertex_count: int, index_count: int):
@@ -55,10 +76,6 @@ class GVEBinaryWriter:
         self.shell_indices = indices
         self.vertex_count = vertex_count
         self.index_count = index_count
-        
-    def set_sdf_bytecode(self, bytecode: bytes):
-        """Set SDF bytecode data."""
-        self.sdf_bytecode = bytecode
         
     def set_volume_data(self, data: bytes):
         """Set Volume data (VDB/NanoVDB)."""
@@ -70,93 +87,81 @@ class GVEBinaryWriter:
         self.splat_count = count
         
     def set_triplanar_data(self, data: bytes):
-        """Set triplanar texture data (for SdfTextured/VolumeTextured modes)."""
+        """Set triplanar texture data."""
         self.triplanar_data = data
+
+    def _collect_chunks(self) -> List[Tuple[bytes, bytes]]:
+        """Collect all non-empty data as (fourcc, data) pairs."""
+        chunks = []
         
+        if self.volume_data:
+            chunks.append((CHUNK_VOLM, self.volume_data))
+        
+        if self.shell_vertices:
+            # MESH chunk: vertex_count(u32) + index_count(u32) + vertices + indices
+            mesh_data = struct.pack("<II", self.vertex_count, self.index_count)
+            mesh_data += self.shell_vertices
+            if self.shell_indices:
+                mesh_data += self.shell_indices
+            chunks.append((CHUNK_MESH, mesh_data))
+        
+        if self.splat_data:
+            chunks.append((CHUNK_SPLT, self.splat_data))
+        
+        if self.triplanar_data:
+            chunks.append((CHUNK_TRIP, self.triplanar_data))
+        
+        if self.runtime_ops_data:
+            chunks.append((CHUNK_ROPS, self.runtime_ops_data))
+        
+        return chunks
+
     def write(self):
         """Write the binary file to disk."""
-        # Calculate offsets (all relative to start of file)
-        offset = HEADER_SIZE
+        chunks = self._collect_chunks()
         
-        # SDF bytecode
-        sdf_bytecode_offset = offset if self.sdf_bytecode else 0
-        sdf_bytecode_size = len(self.sdf_bytecode)
-        offset += sdf_bytecode_size
-        
-        # Volume Data (formerly SDF Texture)
-        # In v2.1 this is VDB data
-        volume_offset = offset if self.volume_data else 0
-        volume_size = len(self.volume_data)
-        offset += volume_size
-        
-        # Shell mesh
-        shell_mesh_offset = offset if self.shell_vertices else 0
-        shell_mesh_size = len(self.shell_vertices) + len(self.shell_indices)
-        if self.shell_vertices:
-            shell_mesh_size += 8  # Add header (vertex_count + index_count)
-        offset += shell_mesh_size
-        
-        # Splat data
-        splat_data_offset = offset if self.splat_data else 0
-        offset += len(self.splat_data)
-        
-        # Triplanar texture data (uses metadata_offset field in header)
-        triplanar_offset = offset if self.triplanar_data else 0
-        offset += len(self.triplanar_data)
-        
-        # Pack header
-        header = struct.pack(
-            HEADER_FMT,
-            GVE_MAGIC,
-            self.VERSION,
-            self.flags,
-            sdf_bytecode_offset,    # sdf_bytecode_offset
-            volume_offset,           # sdf_texture_offset (Used for VDB in V2.1)
-            splat_data_offset,       # splat_data_offset
-            shell_mesh_offset,       # shell_mesh_offset
-            0,                       # audio_patch_offset
-            triplanar_offset,        # metadata_offset (repurposed for triplanar in v2.2)
-            sdf_bytecode_size,       # sdf_bytecode_size
-            volume_size,             # sdf_texture_size (VDB size)
-            self.splat_count,        # splat_count
-            self.vertex_count,       # vertex_count
-        )
-        
-        # Write file
         with open(self.path, "wb") as f:
+            # Write GVE3 header
+            header = struct.pack(GVE3_HEADER_FMT,
+                GVE3_MAGIC,
+                GVE3_VERSION,
+                len(chunks),
+                0,  # reserved
+            )
             f.write(header)
             
-            # Write SDF bytecode
-            if self.sdf_bytecode:
-                f.write(self.sdf_bytecode)
-                
-            # Write Volume Data
-            if self.volume_data:
-                f.write(self.volume_data)
-            
-            # Write shell mesh (vertex_count + index_count header, then data)
-            if self.shell_vertices:
-                # Shell mesh section starts with counts
-                f.write(struct.pack("<II", self.vertex_count, self.index_count))
-                f.write(self.shell_vertices)
-                if self.shell_indices:
-                    f.write(self.shell_indices)
-            
-            # Write splat data
-            if self.splat_data:
-                f.write(self.splat_data)
-            
-            # Write triplanar texture data
-            if self.triplanar_data:
-                f.write(self.triplanar_data)
+            # Write chunks
+            for fourcc, data in chunks:
+                _write_chunk(f, fourcc, data)
+
+    def to_bytes(self) -> bytes:
+        """Build .gve_bin data and return as bytes (no disk write)."""
+        chunks = self._collect_chunks()
+        
+        buf = io.BytesIO()
+        
+        # Write GVE3 header
+        header = struct.pack(GVE3_HEADER_FMT,
+            GVE3_MAGIC,
+            GVE3_VERSION,
+            len(chunks),
+            0,  # reserved
+        )
+        buf.write(header)
+        
+        # Write chunks
+        for fourcc, data in chunks:
+            _write_chunk(buf, fourcc, data)
+        
+        return buf.getvalue()
 
 
 def _prepare_writer(
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
     splat_data: Optional[bytes] = None,
-    sdf_bytecode: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
+    runtime_ops_data: Optional[bytes] = None,
 ) -> GVEBinaryWriter:
     """
     Prepare a GVEBinaryWriter with the given data.
@@ -166,9 +171,6 @@ def _prepare_writer(
     
     if volume_data:
         writer.set_volume_data(volume_data)
-        
-    if sdf_bytecode:
-        writer.set_sdf_bytecode(sdf_bytecode)
     
     if shell_data and len(shell_data) > 8:
         # Parse shell_data from binary shell format
@@ -197,7 +199,7 @@ def _prepare_writer(
         print(f"  [binary_writer] ⚠️ No shell_data or too short: shell_data={shell_data is not None}, len={len(shell_data) if shell_data else 0}", flush=True)
     
     # Parse and set splat data (strip the 4-byte count header — count is
-    # already stored in the GVE header's splat_count field)
+    # already stored separately)
     if splat_data and len(splat_data) >= 4:
         splat_count = struct.unpack("<I", splat_data[0:4])[0]
         writer.set_splat_data(splat_data[4:], splat_count)
@@ -205,6 +207,10 @@ def _prepare_writer(
     # Set triplanar texture data
     if triplanar_data:
         writer.set_triplanar_data(triplanar_data)
+
+    if runtime_ops_data:
+        # Direct set as raw bytes
+        writer.runtime_ops_data = runtime_ops_data
     
     return writer
 
@@ -214,13 +220,13 @@ def write_gve_bin(
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
     splat_data: Optional[bytes] = None,
-    sdf_bytecode: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
+    runtime_ops_data: Optional[bytes] = None,
 ) -> Path:
     """
     Write a .gve_bin file from compiled data.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data, sdf_bytecode, triplanar_data)
+    writer = _prepare_writer(volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data)
     writer.path = path
     writer.write()
     return path
@@ -230,82 +236,13 @@ def write_gve_bin_bytes(
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
     splat_data: Optional[bytes] = None,
-    sdf_bytecode: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
+    runtime_ops_data: Optional[bytes] = None,
 ) -> bytes:
     """
     Build .gve_bin data and return as bytes (no disk write).
     
     Used for stage previews during AI generation pipeline.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data, sdf_bytecode, triplanar_data)
-    
-    # Calculate offsets (all relative to start of file)
-    offset = HEADER_SIZE
-    
-    # SDF bytecode
-    sdf_bytecode_offset = offset if writer.sdf_bytecode else 0
-    sdf_bytecode_size = len(writer.sdf_bytecode)
-    offset += sdf_bytecode_size
-    
-    # Volume Data (VDB)
-    volume_offset = offset if writer.volume_data else 0
-    volume_size = len(writer.volume_data)
-    offset += volume_size
-    
-    # Shell mesh
-    shell_mesh_offset = offset if writer.shell_vertices else 0
-    shell_mesh_size = len(writer.shell_vertices) + len(writer.shell_indices)
-    if writer.shell_vertices:
-        shell_mesh_size += 8  # Add header (vertex_count + index_count)
-    offset += shell_mesh_size
-    
-    # Splat data
-    splat_data_offset = offset if writer.splat_data else 0
-    offset += len(writer.splat_data)
-    
-    # Triplanar texture data
-    triplanar_offset = offset if writer.triplanar_data else 0
-    offset += len(writer.triplanar_data)
-    
-    # Pack header
-    header = struct.pack(
-        HEADER_FMT,
-        GVE_MAGIC,
-        writer.VERSION,
-        writer.flags,
-        sdf_bytecode_offset,
-        volume_offset,
-        splat_data_offset,
-        shell_mesh_offset,
-        0,  # audio_patch_offset
-        triplanar_offset,  # metadata_offset (repurposed for triplanar in v2.2)
-        sdf_bytecode_size,
-        volume_size,
-        writer.splat_count,
-        writer.vertex_count,
-    )
-    
-    # Build bytes buffer
-    parts = [header]
-    
-    if writer.sdf_bytecode:
-        parts.append(writer.sdf_bytecode)
-    
-    if writer.volume_data:
-        parts.append(writer.volume_data)
-    
-    if writer.shell_vertices:
-        parts.append(struct.pack("<II", writer.vertex_count, writer.index_count))
-        parts.append(writer.shell_vertices)
-        if writer.shell_indices:
-            parts.append(writer.shell_indices)
-    
-    if writer.splat_data:
-        parts.append(writer.splat_data)
-    
-    if writer.triplanar_data:
-        parts.append(writer.triplanar_data)
-    
-    return b"".join(parts)
-
+    writer = _prepare_writer(volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data)
+    return writer.to_bytes()

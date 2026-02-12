@@ -1,133 +1,149 @@
 //! Binary asset parsing for the renderer
 //!
 //! Contains functions for parsing .gve_bin binary data into GPU-ready assets.
-//! Handles dense volumes, SDF bytecode, and shell mesh extraction.
+//! GVE 3.0 chunk-based format: each section is a self-describing chunk with
+//! a FourCC identifier (VOLM, MESH, SPLT, TRIP, ROPS) and explicit size.
 
 use wgpu::util::DeviceExt;
-use shared::{GVEBinaryHeader, ShellVertex, GVE_MAGIC};
+use shared::ShellVertex;
+use shared::binary_format::{GVE3Header, ChunkHeader, GVE3_MAGIC, chunk_id, align_to_16};
 
-use crate::renderer::types::{GPUSDFInstruction, LoadedMesh, LoadedSDF, LoadedSplat, LoadedVolume};
+use crate::renderer::types::{LoadedMesh, LoadedSplat, LoadedVolume};
 
 // ============================================================================
 // Binary Parsing Constants
 // ============================================================================
 
-/// SDFBytecodeHeader size: instruction_count(4) + bounds_min(12) + bounds_max(12) + reserved(4)
-const SDF_HEADER_SIZE: usize = 32;
-
-/// SDFInstruction size: type(1) + op(1) + operand1(2) + operand2(2) + reserved(2) + params(32)
-const SDF_INSTR_SIZE: usize = 40;
-
-/// Maximum instructions per SDF (WebGL2 uniform buffer limit)
-pub const MAX_SDF_INSTRUCTIONS: usize = 16;
+const GVE3_HEADER_SIZE: usize = std::mem::size_of::<GVE3Header>();
+const CHUNK_HEADER_SIZE: usize = std::mem::size_of::<ChunkHeader>();
 
 // ============================================================================
-// Geometry Loading
+// Geometry Loading (GVE 3.0 Chunk-Based)
 // ============================================================================
 
-/// Load geometry from .gve_bin binary data
+/// Load geometry from .gve_bin binary data (GVE 3.0 chunk format)
 ///
-/// Parses the binary header and extracts all available representations:
-/// - Dense volume (for GPU raymarching)
-/// - SDF bytecode (legacy CSG raymarching)
-/// - Shell mesh (rasterized view)
-/// - Splats (gaussian splatting)
+/// Iterates over self-describing chunks and extracts:
+/// - Dense volume (VOLM) for GPU raymarching
+/// - Shell mesh (MESH) for rasterized view
+/// - Splats (SPLT) for gaussian splatting
+/// - Triplanar textures (TRIP) for surface coloring
 pub fn load_geometry_from_binary(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     data: &[u8],
-    sdf_bind_group_layout: &wgpu::BindGroupLayout,
-    sdf_uniform_buffer: &wgpu::Buffer,
     volume_bind_group_layout: &wgpu::BindGroupLayout,
     volume_uniform_buffer: &wgpu::Buffer,
 ) -> Result<GeometryLoadResult, GeometryLoadError> {
-    // Validate minimum size for header
-    if data.len() < std::mem::size_of::<GVEBinaryHeader>() {
+    // Validate minimum size for GVE3 header
+    if data.len() < GVE3_HEADER_SIZE {
         return Err(GeometryLoadError::DataTooSmall);
     }
 
-    // Parse header
-    let header: &GVEBinaryHeader = bytemuck::from_bytes(&data[..std::mem::size_of::<GVEBinaryHeader>()]);
-    
+    // Parse GVE3 header
+    let header: &GVE3Header = bytemuck::from_bytes(&data[..GVE3_HEADER_SIZE]);
+
     // Validate magic
-    if &header.magic != GVE_MAGIC {
+    if header.magic != GVE3_MAGIC {
         return Err(GeometryLoadError::InvalidMagic);
     }
 
-    // Copy from packed struct to avoid alignment issues
-    let version = header.version;
-    let vertex_count = header.vertex_count;
-    let shell_mesh_offset = header.shell_mesh_offset;
-    let volume_data_offset = header.volume_data_offset;
-    let sdf_bytecode_offset = header.sdf_bytecode_offset;
-    let sdf_bytecode_size = header.sdf_bytecode_size;
-    let volume_size = header.volume_size;
-    let splat_data_offset = header.splat_data_offset;
-    let splat_count = header.splat_count;
-    let triplanar_offset = header.triplanar_offset;
-
-    log::info!("📄 GVE Header: version={:#x}, vertices={}, shell_offset={}, volume_offset={}, volume_size={}, triplanar={}", 
-        version, vertex_count, shell_mesh_offset, volume_data_offset, volume_size, triplanar_offset);
+    let chunk_count = header.chunk_count;
+    log::info!("\u{1f4e6} GVE3 file: {} chunks", chunk_count);
 
     let mut result = GeometryLoadResult {
-        sdf: None,
         mesh: None,
         splat: None,
         volume: None,
     };
 
-    // Parse dense volume (for GPU raymarching) - priority for SDF view
-    // When triplanar_offset > 0, triplanar textures are parsed and bound for SDF surface color
-    log::info!("📦 Checking volume: offset={}, size={}", volume_data_offset, volume_size);
-    if volume_data_offset > 0 && volume_size > 0 {
-        if let Some(vol) = parse_dense_volume(
-            device,
-            queue,
-            data,
-            volume_data_offset as usize,
-            volume_size as usize,
-            triplanar_offset,
-            volume_bind_group_layout,
-            volume_uniform_buffer,
-        ) {
-            log::info!("✅ Loaded dense volume: {}x{}x{} (triplanar: {})", vol.dims[0], vol.dims[1], vol.dims[2], vol.has_triplanar);
-            result.volume = Some(vol);
+    // Collect chunk locations: (fourcc, data_offset, data_size)
+    let mut chunks: Vec<([u8; 4], usize, usize)> = Vec::new();
+    let mut cursor = GVE3_HEADER_SIZE;
+
+    for i in 0..chunk_count as usize {
+        if cursor + CHUNK_HEADER_SIZE > data.len() {
+            log::warn!("\u{26a0}\u{fe0f} Chunk {} header extends past EOF", i);
+            break;
         }
-    }
-    
-    // Parse SDF bytecode (legacy CSG raymarching)
-    if sdf_bytecode_offset > 0 && sdf_bytecode_size > 0 {
-        if let Some(sdf) = parse_sdf_bytecode(
-            device,
-            data,
-            sdf_bytecode_offset as usize,
-            sdf_bytecode_size as usize,
-            sdf_bind_group_layout,
-            sdf_uniform_buffer,
-        ) {
-            log::info!("✅ Loaded SDF bytecode");
-            result.sdf = Some(sdf);
+        let chunk_hdr: &ChunkHeader = bytemuck::from_bytes(&data[cursor..cursor + CHUNK_HEADER_SIZE]);
+        let fourcc = chunk_hdr.fourcc;
+        let size = chunk_hdr.size as usize;
+        let data_start = cursor + CHUNK_HEADER_SIZE;
+
+        if data_start + size > data.len() {
+            log::warn!("\u{26a0}\u{fe0f} Chunk {} ({}) data extends past EOF", i,
+                String::from_utf8_lossy(&fourcc));
+            break;
         }
+
+        log::info!("  \u{1f4e6} Chunk {}: {} ({} bytes)", i, String::from_utf8_lossy(&fourcc), size);
+        chunks.push((fourcc, data_start, size));
+
+        // Advance past data + padding to 16-byte boundary
+        cursor = data_start + align_to_16(size as u64) as usize;
     }
 
-    // Check for Splat Data
-    if splat_data_offset > 0 && splat_count > 0 {
-        if let Some(splat) = parse_splat_data(device, data, splat_data_offset as usize, splat_count as usize) {
-            log::info!("✅ Loaded Splats: {}", splat_count);
-            result.splat = Some(splat);
-        }
-    }
+    // Find the TRIP chunk offset for volume parsing (needed to bind triplanar textures)
+    let trip_chunk = chunks.iter().find(|(cc, _, _)| *cc == chunk_id::TRIP);
+    let triplanar_global_offset = trip_chunk.map(|(_, off, _)| *off as u64).unwrap_or(0);
 
-    // Check for shell mesh
-    if shell_mesh_offset > 0 && vertex_count > 0 {
-        if let Some(mesh) = parse_shell_mesh(device, data, header) {
-            log::info!("✅ Loaded shell mesh");
-            result.mesh = Some(mesh);
+    // Parse ROPS chunk if present
+    let rops_chunk = chunks.iter().find(|(cc, _, _)| *cc == chunk_id::ROPS);
+    let patches = if let Some((_, offset, size)) = rops_chunk {
+        parse_runtime_ops(data, *offset, *size).unwrap_or_else(|| {
+            log::warn!("⚠️ Failed to parse ROPS chunk");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
+
+    // Process chunks
+    for (fourcc, offset, size) in &chunks {
+        if *fourcc == chunk_id::VOLM {
+            if let Some(mut vol) = parse_dense_volume(
+                device, queue, data,
+                *offset, *size,
+                triplanar_global_offset,
+                volume_bind_group_layout,
+                volume_uniform_buffer,
+            ) {
+                // Attach parsed runtime patches
+                vol.patches = patches.clone();
+                
+                log::info!("\u{2705} Loaded dense volume: {}x{}x{} (triplanar: {}, patches: {})",
+                    vol.dims[0], vol.dims[1], vol.dims[2], vol.has_triplanar, vol.patches.len());
+                result.volume = Some(vol);
+            }
+        } else if *fourcc == chunk_id::MESH {
+            if let Some(mesh) = parse_shell_mesh(device, data, *offset, *size) {
+                log::info!("\u{2705} Loaded shell mesh");
+                result.mesh = Some(mesh);
+            }
+        } else if *fourcc == chunk_id::SPLT {
+            // Splat count = chunk size / per-splat size
+            let splat_size = std::mem::size_of::<shared::Splat>();
+            let count = *size / splat_size;
+            if count > 0 {
+                if let Some(splat) = parse_splat_data(device, data, *offset, count) {
+                    log::info!("\u{2705} Loaded Splats: {}", count);
+                    result.splat = Some(splat);
+                }
+            }
+        } else if *fourcc == chunk_id::ROPS {
+            // Handled above
+            log::info!("\u{2705} Loaded Runtime Ops: {}", patches.len());
+        } else {
+            // TRIP consumed via triplanar_global_offset, ROPS/META handled
+            if *fourcc != chunk_id::TRIP {
+                log::info!("  \u{23ed}\u{fe0f} Skipping chunk: {}", String::from_utf8_lossy(fourcc));
+            }
         }
     }
 
     // Check if we loaded anything
-    if result.sdf.is_none() && result.mesh.is_none() && result.splat.is_none() && result.volume.is_none() {
+    if result.mesh.is_none() && result.splat.is_none() && result.volume.is_none() {
         return Err(GeometryLoadError::NoGeometry);
     }
 
@@ -136,7 +152,7 @@ pub fn load_geometry_from_binary(
 
 /// Result of loading geometry - can contain multiple representations
 pub struct GeometryLoadResult {
-    pub sdf: Option<LoadedSDF>,
+    // sdf: Option<LoadedSDF>, // Removed
     pub mesh: Option<LoadedMesh>,
     pub splat: Option<LoadedSplat>,
     pub volume: Option<LoadedVolume>,
@@ -148,6 +164,33 @@ pub enum GeometryLoadError {
     DataTooSmall,
     InvalidMagic,
     NoGeometry, // Simplified
+}
+
+// ============================================================================
+// Runtime Ops Parsing
+// ============================================================================
+
+fn parse_runtime_ops(data: &[u8], offset: usize, size: usize) -> Option<Vec<crate::renderer::types::RuntimeVolumeOp>> {
+    let op_size = std::mem::size_of::<crate::renderer::types::RuntimeVolumeOp>();
+    if size % op_size != 0 {
+        log::warn!("⚠️ ROPS chunk size {} not divisible by struct size {}", size, op_size);
+        return None;
+    }
+    
+    let count = size / op_size;
+    let mut ops = Vec::with_capacity(count);
+    let mut cursor = offset;
+    
+    for _ in 0..count {
+        if cursor + op_size > data.len() {
+            break;
+        }
+        let op: crate::renderer::types::RuntimeVolumeOp = bytemuck::cast_slice(&data[cursor..cursor+op_size])[0];
+        ops.push(op);
+        cursor += op_size;
+    }
+    
+    Some(ops)
 }
 
 // ============================================================================
@@ -472,155 +515,40 @@ fn parse_dense_volume(
         has_triplanar,
         triplanar_bounds_min: tri_bounds_min,
         triplanar_bounds_max: tri_bounds_max,
+        patches: Vec::new(),
     })
 }
 
-// ============================================================================
-// SDF Parsing
-// ============================================================================
-
-/// Parse SDF bytecode section from binary data
-///
-/// Uses manual byte reading to avoid alignment issues with unaligned input.
-fn parse_sdf_bytecode(
-    device: &wgpu::Device,
-    data: &[u8],
-    offset: usize,
-    size: usize,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    uniform_buffer: &wgpu::Buffer,
-) -> Option<LoadedSDF> {
-    if offset + size > data.len() {
-        log::warn!("⚠️ SDF bytecode offset out of bounds");
-        return None;
-    }
-
-    let sdf_data = &data[offset..offset + size];
-    
-    if sdf_data.len() < SDF_HEADER_SIZE {
-        log::warn!("⚠️ SDF data too small for header");
-        return None;
-    }
-
-    // Read header manually (avoids alignment issues)
-    let instruction_count = u32::from_le_bytes([sdf_data[0], sdf_data[1], sdf_data[2], sdf_data[3]]);
-    let bounds_min = [
-        f32::from_le_bytes([sdf_data[4], sdf_data[5], sdf_data[6], sdf_data[7]]),
-        f32::from_le_bytes([sdf_data[8], sdf_data[9], sdf_data[10], sdf_data[11]]),
-        f32::from_le_bytes([sdf_data[12], sdf_data[13], sdf_data[14], sdf_data[15]]),
-    ];
-    let bounds_max = [
-        f32::from_le_bytes([sdf_data[16], sdf_data[17], sdf_data[18], sdf_data[19]]),
-        f32::from_le_bytes([sdf_data[20], sdf_data[21], sdf_data[22], sdf_data[23]]),
-        f32::from_le_bytes([sdf_data[24], sdf_data[25], sdf_data[26], sdf_data[27]]),
-    ];
-    
-    log::info!("🔮 SDF: {} instructions, bounds: {:?} to {:?}", 
-        instruction_count, bounds_min, bounds_max);
-
-    let expected_size = SDF_HEADER_SIZE + (instruction_count as usize * SDF_INSTR_SIZE);
-    
-    if sdf_data.len() < expected_size {
-        log::warn!("⚠️ SDF data too small for {} instructions", instruction_count);
-        return None;
-    }
-
-    // Convert to GPU format
-    let gpu_instructions = parse_sdf_instructions(sdf_data, instruction_count);
-
-    // Create GPU uniform buffer
-    let instruction_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("SDF Instruction Buffer"),
-        contents: bytemuck::cast_slice(&gpu_instructions),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-
-    // Create cached bind group (avoids per-frame allocation)
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("SDF Bind Group"),
-        layout: bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: instruction_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    Some(LoadedSDF {
-        instruction_buffer,
-        bind_group,
-        instruction_count,
-        bounds_min,
-        bounds_max,
-    })
-}
-
-/// Parse SDF instructions from raw bytes into GPU format
-fn parse_sdf_instructions(sdf_data: &[u8], instruction_count: u32) -> Vec<GPUSDFInstruction> {
-    let mut gpu_instructions = Vec::with_capacity(MAX_SDF_INSTRUCTIONS);
-    
-    for i in 0..instruction_count.min(MAX_SDF_INSTRUCTIONS as u32) as usize {
-        let base = SDF_HEADER_SIZE + i * SDF_INSTR_SIZE;
-        
-        let instr_type = sdf_data[base] as u32;
-        let op = sdf_data[base + 1] as u32;
-        
-        // Read 8 float params starting at byte 8
-        let mut params = [0.0f32; 8];
-        for j in 0..8 {
-            let p = base + 8 + j * 4;
-            params[j] = f32::from_le_bytes([sdf_data[p], sdf_data[p+1], sdf_data[p+2], sdf_data[p+3]]);
-        }
-        
-        gpu_instructions.push(GPUSDFInstruction {
-            instr_type,
-            op,
-            operand1: 0,
-            operand2: 0,
-            params0: [params[0], params[1], params[2], params[3]],
-            params1: [params[4], params[5], params[6], params[7]],
-        });
-    }
-
-    // Pad to MAX_SDF_INSTRUCTIONS (WebGL2 uniform buffer size requirement)
-    while gpu_instructions.len() < MAX_SDF_INSTRUCTIONS {
-        gpu_instructions.push(GPUSDFInstruction::default());
-    }
-
-    gpu_instructions
-}
+// SDF Parsing Functions REMOVED (v2.3)
 
 // ============================================================================
 // Shell Mesh Parsing
 // ============================================================================
 
-/// Parse shell mesh section from binary data
-fn parse_shell_mesh(device: &wgpu::Device, data: &[u8], header: &GVEBinaryHeader) -> Option<LoadedMesh> {
-    let offset = header.shell_mesh_offset as usize;
-    
-    if offset + 8 > data.len() {
-        log::warn!("⚠️ Shell mesh offset out of bounds");
+/// Parse shell mesh from MESH chunk data
+///
+/// MESH chunk layout: vertex_count(u32) + index_count(u32) + vertices + indices
+fn parse_shell_mesh(device: &wgpu::Device, data: &[u8], offset: usize, size: usize) -> Option<LoadedMesh> {
+    if size < 8 {
+        log::warn!("\u{26a0}\u{fe0f} MESH chunk too small");
         return None;
     }
 
-    // Read vertex_count and index_count
+    let chunk_end = offset + size;
+
+    // Read vertex_count and index_count from start of chunk data
     let vertex_count = u32::from_le_bytes(data[offset..offset+4].try_into().ok()?);
     let index_count = u32::from_le_bytes(data[offset+4..offset+8].try_into().ok()?);
     
-    log::info!("📐 Shell mesh: {} vertices, {} indices", vertex_count, index_count);
+    log::info!("\u{1f4d0} Shell mesh: {} vertices, {} indices", vertex_count, index_count);
 
     // Calculate sizes
     let vertex_size = std::mem::size_of::<ShellVertex>();
     let vertices_start = offset + 8;
     let vertices_end = vertices_start + (vertex_count as usize * vertex_size);
     
-    if vertices_end > data.len() {
-        log::warn!("⚠️ Vertex data out of bounds");
+    if vertices_end > chunk_end {
+        log::warn!("\u{26a0}\u{fe0f} Vertex data extends past MESH chunk");
         return None;
     }
 
@@ -633,18 +561,13 @@ fn parse_shell_mesh(device: &wgpu::Device, data: &[u8], header: &GVEBinaryHeader
     });
 
     // Parse indices if present
-    // Note: Python shell_gen.py always writes u32 indices ('I' format)
     let (index_buffer, use_indices, index_format) = if index_count > 0 {
         let indices_start = vertices_end;
-        // Always use 4-byte indices to match Python's struct.pack('I')
-        let index_size = 4;
+        let index_size = 4; // u32 indices
         let index_format = wgpu::IndexFormat::Uint32;
         let indices_end = indices_start + (index_count as usize * index_size);
         
-        log::info!("📐 Parsing indices: start={}, end={}, count={}, size={}", 
-            indices_start, indices_end, index_count, index_size);
-        
-        if indices_end <= data.len() {
+        if indices_end <= chunk_end {
             let index_data = &data[indices_start..indices_end];
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Loaded Mesh Indices"),
@@ -653,8 +576,7 @@ fn parse_shell_mesh(device: &wgpu::Device, data: &[u8], header: &GVEBinaryHeader
             });
             (Some(buffer), true, index_format)
         } else {
-            log::warn!("⚠️ Index data out of bounds (need {} bytes, have {}), using vertices only", 
-                indices_end, data.len());
+            log::warn!("\u{26a0}\u{fe0f} Index data extends past MESH chunk, using vertices only");
             (None, false, wgpu::IndexFormat::Uint32)
         }
     } else {

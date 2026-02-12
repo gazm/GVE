@@ -23,7 +23,6 @@ from .queue import CompilePriority
 from .bakeries.base import CompilerContext, CompilerOptions
 from .bakeries import VolumeBaker, MeshBaker, SplatBaker, TriplanarBaker
 from .binary_writer import write_gve_bin, write_gve_bin_bytes
-from .sdf_serializer import serialize_sdf_graph
 
 
 @dataclass
@@ -111,10 +110,7 @@ async def draft_compile_dna(
         volume_baker = VolumeBaker()
         volume_result = await volume_baker.bake(ctx)
         
-        # 2. Serialize SDF Bytecode (fast)
-        if ctx.sdf_graph is None:
-            await ctx.ensure_sdf_graph()
-        sdf_bytecode = serialize_sdf_graph(ctx.sdf_graph)
+        # 2. Skip SDF Bytecode (Removed in v2.3)
         
         # 3. Generate Shell (simplified for preview)
         print(f"  [draft-compile] 2. Generating shell...", flush=True)
@@ -131,7 +127,6 @@ async def draft_compile_dna(
             volume_data=volume_result.get("volume_data"),
             shell_data=mesh_result.get("shell_mesh"),
             splat_data=None, # No splats in draft
-            sdf_bytecode=sdf_bytecode,
             triplanar_data=None # No textures in draft
         )
         
@@ -209,7 +204,6 @@ async def compile_asset(request: CompileRequest) -> CompileResult:
         
         # Always bake SDF bytecode first
         await ctx.ensure_sdf_graph()
-        artifacts["sdf_bytecode"] = serialize_sdf_graph(ctx.sdf_graph)
         
         for baker in bakers:
             print(f"  [compile] 🔨 Running {baker.name()} baker...", flush=True)
@@ -226,7 +220,6 @@ async def compile_asset(request: CompileRequest) -> CompileResult:
             volume_data=artifacts.get("volume_data"),
             shell_data=artifacts.get("shell_mesh"),
             splat_data=artifacts.get("splat_data"),
-            sdf_bytecode=artifacts.get("sdf_bytecode"),
             triplanar_data=artifacts.get("triplanar_data"),
         )
         

@@ -54,9 +54,9 @@ def parse_gve_bin(path: Path) -> Optional[BinaryInfo]:
                 
             # Unpack header
             (magic, version, flags,
-             sdf_bytecode_offset, volume_offset, splat_offset,
-             shell_offset, audio_offset, triplanar_offset,
-             sdf_bytecode_size, volume_size, splat_count, vertex_count) = struct.unpack(HEADER_FMT, header_data)
+             volume_offset, splat_offset, shell_offset,
+             audio_offset, triplanar_offset,
+             volume_size, splat_count, vertex_count) = struct.unpack(HEADER_FMT, header_data)
             
             if magic != GVE_MAGIC:
                 return None
@@ -67,10 +67,6 @@ def parse_gve_bin(path: Path) -> Optional[BinaryInfo]:
             
             # Build slot list
             slots = []
-            
-            # SDF Bytecode
-            if sdf_bytecode_offset > 0:
-                slots.append(BinarySlot("SDF Bytecode", sdf_bytecode_offset, sdf_bytecode_size))
             
             # Volume Data
             if volume_offset > 0:

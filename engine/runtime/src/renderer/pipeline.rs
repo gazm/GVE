@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 use glam::Mat4;
 
-use crate::renderer::shaders::{MESH_SHADER, SDF_SHADER, SPLAT_SHADER, VOLUME_SHADER};
+use crate::renderer::shaders::{MESH_SHADER, SPLAT_SHADER, VOLUME_SHADER};
 use crate::renderer::types::{
-    shell_vertex_layout, splat_instance_layout, DebugState, LoadedMesh, LoadedSDF, LoadedSplat, LoadedVolume,
-    RenderConfig, SDFUniforms, Uniforms, ViewMode, VolumeUniforms, VOLUME_UNIFORM_BUFFER_SIZE,
+    shell_vertex_layout, splat_instance_layout, DebugState, LoadedMesh, LoadedSplat, LoadedVolume,
+    RenderConfig, Uniforms, ViewMode, VolumeUniforms, VOLUME_UNIFORM_BUFFER_SIZE,
 };
 use crate::renderer::test_geometry::create_test_cube;
 use crate::renderer::view_cube::{ViewCube, CubeFace};
@@ -56,12 +56,8 @@ pub struct Renderer {
     pub(crate) loaded_meshes: HashMap<u64, LoadedMesh>,
     pub(crate) default_mesh: LoadedMesh,
     
-    // SDF raymarching
-    pub(crate) sdf_pipeline: wgpu::RenderPipeline,
-    pub(crate) sdf_uniform_buffer: wgpu::Buffer,
-    pub(crate) sdf_bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) loaded_sdfs: HashMap<u64, LoadedSDF>,
-    pub(crate) active_sdf: Option<u64>,
+    // SDF raymarching (Removed in v2.3)
+
 
     // Splat rendering
     pub(crate) splat_pipeline: wgpu::RenderPipeline,
@@ -178,96 +174,8 @@ impl Renderer {
         // Default cube mesh
         let default_mesh = create_test_cube(&device);
 
-        // ====================================================================
-        // SDF PIPELINE SETUP
-        // ====================================================================
-        
-        let sdf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SDF Raymarching Shader"),
-            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.into()),
-        });
+        // SDF PIPELINE REMOVED (v2.3)
 
-        let sdf_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("SDF Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[SDFUniforms {
-                inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-                view_proj: Mat4::IDENTITY.to_cols_array_2d(),
-                camera_pos: [0.0, 0.0, 3.0],
-                time: 0.0,
-                resolution: [config.width as f32, config.height as f32],
-                instruction_count: 0,
-                _pad: 0,
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let sdf_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("SDF Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let sdf_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("SDF Pipeline Layout"),
-            bind_group_layouts: &[&sdf_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let sdf_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("SDF Pipeline"),
-            layout: Some(&sdf_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &sdf_shader,
-                entry_point: "vs_fullscreen",
-                buffers: &[],  // Fullscreen triangle - no vertex buffers
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &sdf_shader,
-                entry_point: "fs_sdf",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            // SDF writes depth via frag_depth; Always compare so the shader controls depth
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
-            multiview: None,
-            cache: None,
-        });
 
         // ====================================================================
         // SPLAT PIPELINE SETUP
@@ -364,11 +272,16 @@ impl Renderer {
                 _pad2: 0.0,
                 view_proj: Mat4::IDENTITY.to_cols_array_2d(),
                 use_triplanar: 0,
+                _pad_tri: [0.0, 0.0, 0.0],
                 triplanar_bounds_min: [-1.0, -1.0, -1.0],
-                _pad3: 0.0,
+                active_op_count: 0,
                 triplanar_bounds_max: [1.0, 1.0, 1.0],
                 _pad4: 0.0,
-                _pad_end: [0.0, 0.0, 0.0],
+                ops: [crate::renderer::types::RuntimeVolumeOp {
+                    op_type: 0, _pad0: [0; 3], pos: [0.0; 3], _pad1: 0,
+                    params: [0.0; 8], aabb_min: [0.0; 3], _pad2: 0,
+                    aabb_max: [0.0; 3], _pad3: 0,
+                }; 16],
             };
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Volume Uniform Buffer"),
@@ -508,11 +421,6 @@ impl Renderer {
             uniform_bind_group,
             loaded_meshes: HashMap::new(),
             default_mesh,
-            sdf_pipeline,
-            sdf_uniform_buffer,
-            sdf_bind_group_layout,
-            loaded_sdfs: HashMap::new(),
-            active_sdf: None,
             splat_pipeline,
             loaded_splats: HashMap::new(),
             active_splat: None,
@@ -554,7 +462,8 @@ impl Renderer {
     pub fn get_debug_state(&self) -> DebugState {
         DebugState {
             view_mode: format!("{:?}", self.viewmode),
-            active_sdf: self.active_sdf,
+            // active_sdf: None, // Removed
+
             active_splat: self.active_splat,
             active_volume: self.active_volume,
             camera_pos: self.camera_pos,
@@ -591,7 +500,7 @@ impl Renderer {
 
         // Determine what passes to run based on ViewMode
         let (render_geo, render_splat) = match self.viewmode {
-            ViewMode::Sdf => (true, false),
+            ViewMode::Sdf => (true, false), // Maps to Volume now
             ViewMode::Splat => (false, true),
             ViewMode::SdfOverlay => (true, true),
         };
@@ -627,36 +536,8 @@ impl Renderer {
             }
         }
 
-        // Priority 2: SDF + Splat combined rendering
-        if let Some(sdf_id) = self.active_sdf {
-            if let Some(sdf) = self.loaded_sdfs.get(&sdf_id) {
-                let mut screen_cleared = false;
+        // Priority 2: SDF rendering REMOVED
 
-                if render_geo {
-                    self.render_sdf(&mut encoder, view, sdf, aspect);
-                    screen_cleared = true;
-                }
-
-                if render_splat {
-                    if let Some(splat) = self.loaded_splats.get(&sdf_id) {
-                        if !screen_cleared {
-                             self.render_splats(&mut encoder, view, splat, aspect);
-                             screen_cleared = true;
-                        } else {
-                             self.render_splats_on_sdf(&mut encoder, view, splat, aspect);
-                        }
-                    }
-                }
-                
-                if !screen_cleared {
-                    self.clear_pass(&mut encoder, view);
-                }
-
-                self.render_gizmos(&mut encoder, view, aspect);
-                self.queue.submit(std::iter::once(encoder.finish()));
-                return;
-            }
-        }
 
         // Priority 3: Standalone splat rendering (no SDF)
         if let Some(splat_id) = self.active_splat {

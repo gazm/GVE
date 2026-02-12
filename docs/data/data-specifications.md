@@ -675,23 +675,21 @@ Render using splat pass (rendering-pipeline.md §4)
 ### 3.1 Binary File Structure
 
 ```rust
-// Header (84 bytes)
+// Header (72 bytes)
 struct GVEBinaryHeader {
     magic: [u8; 4],              // "GVE1"
-    version: u32,                // Format version (0x00021000 for v2.1)
+    version: u32,                // Format version (0x00023000 for v2.3)
     flags: u32,                  // Bit flags (compression, LOD levels, etc.)
     
     // Offsets to data sections
-    sdf_bytecode_offset: u64,
-    volume_data_offset: u64,     // (Was sdf_texture_offset in v2.0)
+    volume_data_offset: u64,     
     splat_data_offset: u64,
     shell_mesh_offset: u64,
     audio_patch_offset: u64,
-    metadata_offset: u64,
+    triplanar_offset: u64,       // (Was metadata_offset in v2.0)
     
     // Size fields
-    sdf_bytecode_size: u32,
-    volume_size: u32,            // (Was sdf_texture_size in v2.0)
+    volume_size: u32,            
     splat_count: u32,
     vertex_count: u32,
     
@@ -699,46 +697,9 @@ struct GVEBinaryHeader {
 }
 ```
 
-### 3.2 SDF Bytecode Section
+### 3.2 [REMOVED] SDF Bytecode Section (Deprecated in v2.3)
 
-**Purpose:** LOD 0 (math evaluation) - see `rendering-pipeline.md` §3.3
-
-```rust
-/// SDF Bytecode section header (32 bytes)
-struct SDFBytecodeHeader {
-    instruction_count: u32,
-    bounds_min: [f32; 3],
-    bounds_max: [f32; 3],
-    _reserved: u32,
-}
-
-/// Generic SDF instruction container (40 bytes - fixed size for GPU alignment)
-/// instr_type determines which variant to interpret
-#[repr(C)]
-struct SDFInstruction {
-    instr_type: u8,     // 0=Primitive, 1=BinaryOp, 2=Modifier
-    op: u8,             // Actual operation code (see tables below)
-    operand1: u16,      // child_idx or left_idx
-    operand2: u16,      // right_idx (for binary ops)
-    _reserved: u16,
-    params: [f32; 8],   // 32 bytes (only used by primitives/modifiers)
-}
-
-// Primitive ops (12):
-//   0x01=Sphere, 0x02=Box, 0x03=Cylinder, 0x04=Capsule,
-//   0x05=Torus, 0x06=Cone, 0x07=Plane, 0x08=Revolution,
-//   0x09=Mandelbulb, 0x0A=MengerSponge, 0x0B=JuliaSet, 0x0C=Wedge
-//
-// Binary ops (6):
-//   0x10=Union, 0x11=Subtract, 0x12=Intersect,
-//   0x13=SmoothUnion, 0x14=SmoothSubtract, 0x15=SmoothIntersect
-//
-// Modifier ops (6):
-//   0x20=Twist, 0x21=Bend, 0x22=Mirror,
-//   0x23=Round, 0x24=Elongate, 0x25=Voronoi
-```
-
-**Size:** Typical asset: 10-30 instructions × 40 bytes ≈ 400-1200 bytes + 32-byte header
+**Note:** The SDF Bytecode section (LOD 0) has been removed in version 2.3 to simplify the engine. The Volume Data (LOD 1) now serves as the primary geometry source.
 
 ### 3.3 Volume Data Section (LOD 1)
 

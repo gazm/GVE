@@ -75,15 +75,7 @@ pub fn handle_message(data: &[u8]) {
     with_engine_mut(|engine| handle_binary_message(engine, data));
 }
 
-/// Load a test SDF (sphere with box carved out) for debugging
-#[wasm_bindgen]
-pub fn load_test_sdf() {
-    with_engine_mut(|engine| {
-        engine.renderer.load_test_sdf(999);
-        #[cfg(debug_assertions)]
-        web_sys::console::log_1(&"🔮 Test SDF loaded!".into());
-    });
-}
+// load_test_sdf REMOVED (v2.3)
 
 /// Clear all loaded SDFs and return to default mesh
 #[wasm_bindgen]
@@ -91,25 +83,16 @@ pub fn clear_viewport() {
     with_engine_mut(|engine| engine.renderer.clear_all());
 }
 
-#[wasm_bindgen]
-pub fn clear_sdf() {
-    with_engine_mut(|engine| {
-        engine.renderer.set_active_sdf(None);
-        #[cfg(debug_assertions)]
-        web_sys::console::log_1(&"🧹 SDF cleared, showing mesh".into());
-    });
-}
+// clear_sdf REMOVED (v2.3)
 
-/// Set view mode: 0=Mesh, 1=SDF (uses Volume raymarching), 2=Splat, 3=Overlay (alias)
 #[wasm_bindgen]
 pub fn set_view_mode(mode: u32, asset_id: u64) {
     with_engine_mut(|engine| {
         match mode {
             0 => { // Mesh (Shell)
-                 engine.renderer.set_active_sdf(None);
                  engine.renderer.set_active_splat(None);
                  engine.renderer.set_active_volume(None);
-                 engine.renderer.set_viewmode("sdf"); // Default SDF mode for mesh fallback
+                 engine.renderer.set_viewmode("mesh"); 
                  #[cfg(debug_assertions)] {
                      if engine.renderer.has_mesh(asset_id) {
                          web_sys::console::log_1(&format!("👁️ Mesh mode for asset {}", asset_id).into());
@@ -118,29 +101,24 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
                      }
                  }
             },
-            1 => { // SDF - prefer Volume raymarching over SDF bytecode
+            1 => { // Volume (formerly SDF)
                  let has_volume = engine.renderer.has_volume(asset_id);
                  if has_volume {
                      engine.renderer.set_active_volume(Some(asset_id));
-                 } else if engine.renderer.has_sdf(asset_id) {
-                     engine.renderer.set_active_sdf(Some(asset_id));
                  }
                  engine.renderer.set_active_splat(None);
-                 engine.renderer.set_viewmode("sdf"); // SDF-only mode
+                 engine.renderer.set_viewmode("sdf"); // Keep "sdf" string for compatibility or change to "volume"?
                  #[cfg(debug_assertions)] {
                      if has_volume {
-                         web_sys::console::log_1(&format!("👁️ SDF mode (volume) for asset {}", asset_id).into());
-                     } else if engine.renderer.has_sdf(asset_id) {
-                         web_sys::console::log_1(&format!("👁️ SDF mode (bytecode) for asset {}", asset_id).into());
+                         web_sys::console::log_1(&format!("👁️ Volume mode for asset {}", asset_id).into());
                      } else {
-                         web_sys::console::warn_1(&format!("⚠️ Asset {} has no SDF/Volume data!", asset_id).into());
+                         web_sys::console::warn_1(&format!("⚠️ Asset {} has no Volume data!", asset_id).into());
                      }
                  }
             },
             2 => { // Splat
                  if engine.renderer.has_splat(asset_id) {
                      engine.renderer.set_active_splat(Some(asset_id));
-                     engine.renderer.set_active_sdf(None);
                      engine.renderer.set_active_volume(None);
                      engine.renderer.set_viewmode("splat");
                  }
@@ -152,41 +130,18 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
                      }
                  }
             },
-            3 => { // Overlay (SDF/Volume + Splats)
-                 let has_sdf = engine.renderer.has_sdf(asset_id);
+            3 => { // Overlay (Volume + Splats)
                  let has_volume = engine.renderer.has_volume(asset_id);
                  
                  if has_volume {
                      engine.renderer.set_active_volume(Some(asset_id));
-                     engine.renderer.set_active_sdf(None);
-                 } else if has_sdf {
-                     engine.renderer.set_active_sdf(Some(asset_id));
-                     engine.renderer.set_active_volume(None);
                  }
                  if engine.renderer.has_splat(asset_id) {
                      engine.renderer.set_active_splat(Some(asset_id));
                  }
                  engine.renderer.set_viewmode("sdf_overlay");
                  #[cfg(debug_assertions)]
-                 web_sys::console::log_1(&"👁️ Overlay mode (textured alias): SDF + Splats".into());
-            },
-            4 => { // SDF Overlay (existing behavior: SDF + splats on top)
-                 let has_sdf = engine.renderer.has_sdf(asset_id);
-                 let has_volume = engine.renderer.has_volume(asset_id);
-                 
-                 if has_volume {
-                     engine.renderer.set_active_volume(Some(asset_id));
-                     engine.renderer.set_active_sdf(None);
-                 } else if has_sdf {
-                     engine.renderer.set_active_sdf(Some(asset_id));
-                     engine.renderer.set_active_volume(None);
-                 }
-                 if engine.renderer.has_splat(asset_id) {
-                     engine.renderer.set_active_splat(Some(asset_id));
-                 }
-                 engine.renderer.set_viewmode("sdf_overlay");
-                 #[cfg(debug_assertions)]
-                 web_sys::console::log_1(&"👁️ SDF Overlay mode: SDF + Splats rendered on top".into());
+                 web_sys::console::log_1(&"👁️ Overlay mode: Volume + Splats".into());
             },
             _ => {}
         }
@@ -200,14 +155,12 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
 pub fn get_asset_modes(asset_id: u64) -> u8 {
     with_engine(|engine| {
         let has_mesh = engine.renderer.has_mesh(asset_id);
-        let has_sdf = engine.renderer.has_sdf(asset_id);
         let has_splat = engine.renderer.has_splat(asset_id);
         let has_volume = engine.renderer.has_volume(asset_id);
-        let has_sdf_mode = has_volume || has_sdf;
         (has_mesh as u8)
-            | ((has_sdf_mode as u8) << 1)
+            | ((has_volume as u8) << 1) // Reusing bit 1 for volume
             | ((has_splat as u8) << 2)
-            | ((has_volume as u8) << 3)
+            | ((has_volume as u8) << 3) // Duplicate for compatibility? Or just use bit 1?
     }).unwrap_or(0)
 }
 
@@ -245,9 +198,8 @@ pub fn get_debug_info() -> String {
     with_engine(|engine| {
         let state = engine.renderer.get_debug_state();
         format!(
-            r#"{{"view_mode": "{}", "active_assets": {{ "sdf": {}, "splat": {}, "volume": {} }}, "camera": {{ "pos": [{:.2}, {:.2}, {:.2}], "yaw": {:.2}, "pitch": {:.2} }} }}"#,
+            r#"{{"view_mode": "{}", "active_assets": {{ "splat": {}, "volume": {} }}, "camera": {{ "pos": [{:.2}, {:.2}, {:.2}], "yaw": {:.2}, "pitch": {:.2} }} }}"#,
             state.view_mode,
-            state.active_sdf.map(|id| id.to_string()).unwrap_or("null".to_string()),
             state.active_splat.map(|id| id.to_string()).unwrap_or("null".to_string()),
             state.active_volume.map(|id| id.to_string()).unwrap_or("null".to_string()),
             state.camera_pos[0], state.camera_pos[1], state.camera_pos[2],
