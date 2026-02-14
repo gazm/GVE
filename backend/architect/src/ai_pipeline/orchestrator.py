@@ -44,6 +44,7 @@ class GenerateRequest(BaseModel):
     style_reference: str | None = None
     constraints: dict[str, Any] | None = None
     track_override: GenerationTrack | None = None
+    ai_provider: str | None = None  # "gemini" | "openai"
 
 # ... (inside generate_asset)
 
@@ -79,6 +80,7 @@ class GenerationState:
     max_retries: int = 3
     style_token: str | None = None
     concept_image_base64: str | None = None  # Concept image for vision-guided generation
+    ai_provider: str | None = None  # Preferred AI provider for stage agents
     
     def to_agent_context(self) -> AgentContext:
         """Convert state to AgentContext for agent execution."""
@@ -191,6 +193,7 @@ async def _generate_asset_internal(
         selected_track=track,
         style_token=request.style_reference,
         concept_image_base64=concept_image_base64,
+        ai_provider=request.ai_provider,
     )
     
     # 3. Inject RAG context

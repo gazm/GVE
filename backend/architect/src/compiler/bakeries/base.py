@@ -19,6 +19,10 @@ from ..queue import CompilePriority
 class CompilerOptions(BaseModel):
     """Configuration for the compilation process."""
     resolution: int = Field(128, ge=16, le=512, description="Voxel resolution for SDF baking")
+    min_voxels_shortest_axis: int = Field(
+        20, ge=4, le=128,
+        description="Minimum voxels on thinnest axis. Prevents flat rendering of thin objects (e.g. pistols at real-world meter scale).",
+    )
     texture_mode: str = Field("procedural_triplanar", pattern="^(dense|swatch|procedural_triplanar)$")
     
     # Triplanar settings
@@ -100,8 +104,19 @@ class CompilerContext:
         # Calculate voxel size based on resolution
         self._calculate_voxel_size()
 
+    # WebGPU 3D texture hard limit per axis
+    MAX_VOXELS_PER_AXIS: int = 256
+
     def _calculate_voxel_size(self):
-        """Calculate voxel size and padding based on bounds and target resolution."""
+        """Calculate voxel size and padding based on bounds and target resolution.
+
+        Applies adaptive resolution: if the shortest axis would have fewer than
+        ``min_voxels_shortest_axis`` voxels, the voxel size is reduced so thin
+        objects (e.g. a pistol at real-world meter scale) retain visual detail.
+
+        Final voxel size is clamped so no axis exceeds ``MAX_VOXELS_PER_AXIS``
+        (WebGPU 3D texture limit = 256 per axis).
+        """
         import numpy as np
         
         b_min = np.array(self.bounds[0], dtype=np.float32)
@@ -109,9 +124,42 @@ class CompilerContext:
         extent = b_max - b_min
         
         longest_axis = float(extent.max())
+        shortest_axis = float(extent.min())
         target_res = self.options.resolution
         self.voxel_size = longest_axis / target_res
         
+        # Adaptive: ensure minimum voxels on the thinnest axis
+        min_voxels = self.options.min_voxels_shortest_axis
+        if shortest_axis > 1e-6 and min_voxels > 0:
+            detail_voxel_size = shortest_axis / min_voxels
+            if detail_voxel_size < self.voxel_size:
+                print(
+                    f"    [Context] Adaptive voxel: shortest axis {shortest_axis:.4f}m "
+                    f"needs {min_voxels} voxels -> voxel_size {detail_voxel_size:.5f}m",
+                    flush=True,
+                )
+                self.voxel_size = detail_voxel_size
+
+        # Clamp: no axis may exceed MAX_VOXELS_PER_AXIS (WebGPU 3D texture limit)
+        max_limit = self.MAX_VOXELS_PER_AXIS
+        min_voxel_for_limit = longest_axis / max_limit
+        if self.voxel_size < min_voxel_for_limit:
+            print(
+                f"    [Context] Clamped voxel_size {self.voxel_size:.5f}m -> "
+                f"{min_voxel_for_limit:.5f}m (longest axis {longest_axis:.3f}m "
+                f"capped to {max_limit} voxels)",
+                flush=True,
+            )
+            self.voxel_size = min_voxel_for_limit
+
+        # Log final resolution estimate
+        est_res = [int(e / self.voxel_size) for e in extent.tolist()]
+        print(
+            f"    [Context] Final voxel_size={self.voxel_size:.5f}m, "
+            f"est grid ~{est_res[0]}x{est_res[1]}x{est_res[2]}",
+            flush=True,
+        )
+
         # Add padding: 10% or 3 voxels
         padding = np.maximum(extent * 0.1, self.voxel_size * 3)
         b_min -= padding

@@ -412,7 +412,8 @@ def _find_parent_and_index(node: Dict, target_id: str, parent: Optional[Dict] = 
 
 def _inject_machining_patches(dna: Dict) -> None:
     """
-    Inject A2 Machinist subtract patches into the SDF tree.
+    Inject A2 Machinist patches into the SDF tree.
+    Supports subtract (carving) and add (hardware) operations.
     """
     patches = dna.get("machining_patches") or []
     if not patches:
@@ -425,29 +426,32 @@ def _inject_machining_patches(dna: Dict) -> None:
         if not isinstance(patch, dict):
             continue
         target_id = patch.get("target_node_id")
-        sub = patch.get("subtract")
-        if not target_id or not sub or not isinstance(sub, dict):
+        if not target_id:
             continue
+        op = (patch.get("op") or "subtract").lower()
+
+        geom = patch.get("subtract") if op in ("subtract", "smooth_subtract") else patch.get("add")
+        if not geom or not isinstance(geom, dict):
+            continue
+
         parent, idx = _find_parent_and_index(root, target_id)
         if parent is None or idx is None:
             print(f"      [prepare_dna] ⚠️ Machinist patch target not found: {target_id}", flush=True)
             continue
         child_list = parent.get("children") or parent.get("nodes") or []
         child = child_list[idx]
-        sub_node: Dict = {
+        geom_node: Dict = {
             "type": "primitive",
-            "shape": sub.get("shape", "box"),
-            "params": sub.get("params") or sub.get("param") or {},
-            "transform": sub.get("transform"),
+            "shape": geom.get("shape", "box"),
+            "params": geom.get("params") or geom.get("param") or {},
+            "transform": geom.get("transform"),
         }
-        op = (patch.get("op") or "subtract").lower()
-        new_op: Dict = {
-            "type": "operation",
-            "op": op,
-            "children": [child, sub_node],
-        }
-        if op == "smooth_subtract" and patch.get("k") is not None:
-            new_op["k"] = float(patch["k"])
+        if op == "add":
+            new_op = {"type": "operation", "op": "union", "children": [child, geom_node]}
+        else:
+            new_op = {"type": "operation", "op": op, "children": [child, geom_node]}
+            if op == "smooth_subtract" and patch.get("k") is not None:
+                new_op["k"] = float(patch["k"])
         key = "children" if "children" in parent else "nodes"
         parent[key][idx] = new_op
         applied += 1
@@ -514,9 +518,18 @@ def _prepare_dna(dna: Dict) -> Dict:
 
 def collect_node_bounds(dna: Dict) -> List[Tuple[str, List[float], List[float]]]:
     """Collect world-space AABB (bmin, bmax) for every node that has an "id"."""
-    out: List[Tuple[str, List[float], List[float]]] = []
+    infos = collect_node_info(dna)
+    return [(n["id"], n["bmin"], n["bmax"]) for n in infos]
 
-    def traverse(node: Dict) -> None:
+
+def collect_node_info(dna: Dict) -> List[Dict]:
+    """Collect node id, path, center, bmin, bmax for every node with an "id".
+    Used by property editor and viewport for node selection and gizmo placement.
+    """
+    out: List[Dict] = []
+
+    def traverse(node: Dict, path_prefix: str, child_key: str, idx: int) -> None:
+        path = f"{path_prefix}.{child_key}.{idx}" if path_prefix else f"{child_key}.{idx}"
         node_id = node.get("id")
         if node_id:
             try:
@@ -525,17 +538,44 @@ def collect_node_bounds(dna: Dict) -> List[Tuple[str, List[float], List[float]]]
                     b_min, b_max = built.compute_bounds()
                     b_min = b_min.detach().cpu().tolist()
                     b_max = b_max.detach().cpu().tolist()
-                    out.append((node_id, b_min, b_max))
+                    center = [(b_min[i] + b_max[i]) / 2 for i in range(3)]
+                    out.append({
+                        "id": node_id,
+                        "path": path,
+                        "center": center,
+                        "bmin": b_min,
+                        "bmax": b_max,
+                    })
             except Exception as e:
-                print(f"    ⚠️ collect_node_bounds skip {node_id}: {e}", flush=True)
-        for child in node.get("children") or []:
-            traverse(child)
+                print(f"    ⚠️ collect_node_info skip {node_id}: {e}", flush=True)
+        for i, child in enumerate(node.get("children") or []):
+            traverse(child, path, "children", i)
 
     if "root_node" in dna:
-        traverse(dna["root_node"])
+        root = dna["root_node"]
+        root_id = root.get("id")
+        if root_id:
+            try:
+                built = build_node(root)
+                if hasattr(built, "compute_bounds"):
+                    b_min, b_max = built.compute_bounds()
+                    b_min = b_min.detach().cpu().tolist()
+                    b_max = b_max.detach().cpu().tolist()
+                    center = [(b_min[i] + b_max[i]) / 2 for i in range(3)]
+                    out.append({
+                        "id": root_id,
+                        "path": "root_node",
+                        "center": center,
+                        "bmin": b_min,
+                        "bmax": b_max,
+                    })
+            except Exception as e:
+                print(f"    ⚠️ collect_node_info skip root {root_id}: {e}", flush=True)
+        for i, child in enumerate(root.get("children") or []):
+            traverse(child, "root_node", "children", i)
     elif "nodes" in dna:
-        for n in dna["nodes"]:
-            traverse(n)
+        for i, n in enumerate(dna["nodes"]):
+            traverse(n, "", "nodes", i)
     return out
 
 

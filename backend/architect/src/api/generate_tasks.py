@@ -9,6 +9,7 @@ Separated from generate.py route handlers for file-size discipline.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from cachetools import TTLCache
@@ -25,6 +26,23 @@ concept_jobs: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=256, ttl=7200)
 
 # Stage preview binaries — 64 entries, 5 min TTL (auto-expires, no manual cleanup needed)
 stage_previews: TTLCache[str, bytes] = TTLCache(maxsize=64, ttl=300)
+
+
+def submit_stage_review(job_id: str, action: str) -> bool:
+    """
+    Resolve the A1 review future so the pipeline continues or aborts.
+    Returns True if the future was resolved, False if job not awaiting review.
+    """
+    job = jobs.get(job_id)
+    if not job:
+        return False
+    fut = job.get("stage_review_future")
+    if not fut or fut.done():
+        return False
+    should_continue = action.lower() == "continue"
+    fut.set_result(should_continue)
+    job["stage_review_future"] = None
+    return True
 
 
 async def run_concept_generation(job_id: str, request: ConceptRequestAPI) -> None:
@@ -78,10 +96,11 @@ async def run_generation_with_concept(
     print(f"🚀 [*] Starting generation job {job_id} with concept reference...")
     jobs[job_id]["status"] = "running"
     jobs[job_id]["current_stage"] = None
+    jobs[job_id]["stage_review_future"] = None
     
-    # Stage preview callback - stores preview and broadcasts WebSocket event
-    async def on_stage_complete(stage: str, preview_binary: bytes) -> None:
-        """Callback for pipeline stage completion - broadcasts preview to UI."""
+    # Stage preview callback - stores preview, broadcasts, and for A1 waits for user review
+    async def on_stage_complete(stage: str, preview_binary: bytes) -> bool:
+        """Callback for pipeline stage completion. Returns True to continue, False to abort."""
         preview_id = f"{job_id}_stage_{stage}"
         
         stage_previews[preview_id] = preview_binary
@@ -90,14 +109,31 @@ async def run_generation_with_concept(
         print(f"📺 [*] Stage {stage} preview ready ({len(preview_binary)} bytes)")
         
         try:
-            await broadcast_event("generate:stage_complete", {
+            payload = {
                 "job_id": job_id,
                 "stage": stage,
                 "preview_url": f"/api/generate/preview/{preview_id}",
                 "preview_bytes": len(preview_binary),
-            })
+            }
+            if stage == "A1":
+                payload["awaiting_review"] = True
+                jobs[job_id]["stage_review_future"] = asyncio.get_running_loop().create_future()
+            await broadcast_event("generate:stage_complete", payload)
         except Exception as ws_error:
             print(f"⚠️ WebSocket broadcast failed (non-fatal): {ws_error}")
+        
+        if stage == "A1" and jobs[job_id].get("stage_review_future"):
+            try:
+                should_continue = await asyncio.wait_for(
+                    jobs[job_id]["stage_review_future"],
+                    timeout=300.0,
+                )
+                jobs[job_id]["stage_review_future"] = None
+                return should_continue
+            except asyncio.TimeoutError:
+                print(f"⚠️ A1 review timed out (5 min) - continuing pipeline")
+                return True
+        return True
     
     try:
         track = None
@@ -109,6 +145,7 @@ async def run_generation_with_concept(
             category=request.category,
             style_reference=request.style_reference,
             track_override=track,
+            ai_provider=request.ai_provider,
         )
         
         print(f"🔧 [*] Job {job_id}: Calling generate_asset_with_concept with stage previews...")
@@ -152,19 +189,32 @@ async def run_generation_with_concept(
             print(f"⚠️ RAG indexing failed (non-fatal): {rag_error}")
         
     except Exception as e:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-        error_trace = traceback.format_exc()
-        print(f"❌ [-] Generation job {job_id} failed: {e}")
-        print(f"[-] Traceback:\n{error_trace}")
-        
-        try:
-            await broadcast_event("generate:failed", {
-                "job_id": job_id,
-                "error": str(e),
-            })
-        except Exception:
-            pass
+        from ..ai_pipeline.track_matter_pipeline import GenerationRejectedByUser
+        if isinstance(e, GenerationRejectedByUser):
+            jobs[job_id]["status"] = "rejected"
+            jobs[job_id]["error"] = "User rejected Blacksmith (A1) output"
+            print(f"🚫 [-] Generation job {job_id} rejected by user")
+            try:
+                await broadcast_event("generate:rejected", {
+                    "job_id": job_id,
+                    "error": "User rejected Blacksmith output",
+                })
+            except Exception:
+                pass
+        else:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = str(e)
+            error_trace = traceback.format_exc()
+            print(f"❌ [-] Generation job {job_id} failed: {e}")
+            print(f"[-] Traceback:\n{error_trace}")
+            
+            try:
+                await broadcast_event("generate:failed", {
+                    "job_id": job_id,
+                    "error": str(e),
+                })
+            except Exception:
+                pass
 
 
 async def run_generation(job_id: str, request: GenerateRequestAPI) -> None:
@@ -191,6 +241,7 @@ async def run_generation(job_id: str, request: GenerateRequestAPI) -> None:
             category=request.category,
             style_reference=request.style_reference,
             track_override=track,
+            ai_provider=request.ai_provider,
         )
         
         print(f"🔧 [*] Job {job_id}: Calling generate_asset...")

@@ -17,6 +17,8 @@ class GenerateRequestAPI(BaseModel):
     category: str | None = None
     style_reference: str | None = None
     track_override: str | None = None  # "matter", "landscape", "audio"
+    concept_image_base64: str | None = None  # Optional visual reference for direct generation
+    ai_provider: str | None = None  # "gemini" | "openai"
 
 
 class GenerateJobResponse(BaseModel):
@@ -108,4 +110,34 @@ class ConceptApproveResponse(BaseModel):
     
     concept_job_id: str
     generation_job_id: str  # New job ID for 3D generation
+    status: str
+
+
+class RecentConceptItem(BaseModel):
+    """Recent accepted concept image metadata for UI selection."""
+
+    asset_id: str
+    prompt: str
+    concept_image: str
+    created_at: str | None = None
+
+
+class RecentConceptsResponse(BaseModel):
+    """Recent accepted concept list."""
+
+    items: list[RecentConceptItem]
+    count: int
+
+
+class StageReviewRequest(BaseModel):
+    """Request to continue or reject Blacksmith (A1) output."""
+    
+    action: str  # "continue" | "reject"
+
+
+class StageReviewResponse(BaseModel):
+    """Response after submitting stage review."""
+    
+    job_id: str
+    action: str
     status: str

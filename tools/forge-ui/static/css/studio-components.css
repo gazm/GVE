@@ -5,6 +5,15 @@
     margin-bottom: 16px;
 }
 
+.genai-accordion {
+    padding: 0;
+    gap: 10px;
+}
+
+.accordion-section-content {
+    padding: 12px;
+}
+
 .form-group label {
     display: block;
     font-size: 0.75rem;
@@ -60,6 +69,11 @@
     transition: border-color 0.2s;
 }
 
+select.prompt-input {
+    min-height: 44px;
+    resize: none;
+}
+
 .prompt-input:focus {
     outline: none;
     border-color: var(--accent);
@@ -109,6 +123,51 @@
 .material-chips .chip.suggested {
     border-color: #00ff88;
     color: #00ff88;
+}
+
+.concept-recent-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.concept-thumb-btn {
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    padding: 4px;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.2s;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+}
+
+.concept-thumb-btn:hover {
+    border-color: var(--text-secondary);
+    transform: translateY(-1px);
+}
+
+.concept-thumb-btn.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.concept-thumb-btn img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.concept-thumb-meta {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
 }
 
 /* Generate Button */
@@ -700,6 +759,43 @@
     margin-bottom: 12px;
 }
 
+.model-concept-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.model-concept-actions input[type="file"] {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.75rem;
+}
+
+.selected-concept-preview {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-elevated);
+}
+
+.selected-concept-preview img {
+    width: 54px;
+    height: 54px;
+    object-fit: cover;
+    border-radius: 4px;
+}
+
+.selected-concept-meta {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+
 .toggle-label {
     display: flex;
     align-items: center;
@@ -855,6 +951,20 @@
 
 .stage-progress-header {
     margin-bottom: 12px;
+}
+
+.stage-review-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.stage-review-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
 }
 
 .stage-progress-label {

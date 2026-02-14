@@ -3,7 +3,7 @@ from .assets import (
     list_assets, list_assets_by_tags, search_assets, close_connections,
     vector_search, update_asset_rag, save_asset_doc, load_asset_doc,
     update_asset_field,
-    store_concept_rag, search_concepts,
+    store_concept_rag, search_concepts, list_recent_approved_concepts,
 )
 from .materials import (
     get_material, get_audio_properties, 
@@ -24,7 +24,7 @@ __all__ = [
     # RAG / Vector search
     "vector_search", "update_asset_rag", "save_asset_doc", "load_asset_doc",
     # Concept RAG
-    "store_concept_rag", "search_concepts",
+    "store_concept_rag", "search_concepts", "list_recent_approved_concepts",
     # Materials
     "get_material", "get_audio_properties", "resolve_impact_pair",
     "list_materials", "get_registry_for_rag",

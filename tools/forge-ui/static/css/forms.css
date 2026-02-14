@@ -173,6 +173,10 @@
 
 .accordion-header {
     padding: 16px 20px;
+    width: 100%;
+    border: none;
+    margin: 0;
+    text-align: left;
     cursor: pointer;
     font-family: var(--font-display);
     font-weight: 700;
@@ -203,6 +207,14 @@
     color: var(--accent);
     background: var(--bg-elevated);
     border-bottom: 1px solid var(--border);
+}
+
+.accordion-header span:last-child {
+    transition: transform 0.2s ease;
+}
+
+.accordion-item.active .accordion-header span:last-child {
+    transform: rotate(180deg);
 }
 
 .accordion-content {
@@ -274,6 +286,51 @@
 
 .node-header:hover {
     background: var(--glass);
+}
+
+.node-header.selectable {
+    cursor: pointer;
+}
+
+.node-header.selectable:hover {
+    background: rgba(var(--accent-rgb, 100, 149, 237), 0.15);
+}
+
+.node-header.selected {
+    background: rgba(var(--accent-rgb, 100, 149, 237), 0.25);
+    border-left: 3px solid var(--accent);
+}
+
+.node-xyz-section {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-surface);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+
+.node-xyz-header {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+}
+
+.node-xyz-inputs {
+    display: flex;
+    gap: 1rem;
+}
+
+.node-xyz-inputs label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.node-xyz-inputs input {
+    width: 5rem;
+    padding: 0.35rem 0.5rem;
 }
 
 .caret {

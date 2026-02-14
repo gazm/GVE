@@ -14,6 +14,11 @@ The AI Pipeline transforms natural language prompts into valid GVE-1 assets (`.g
 2. **User Review** - User approves, regenerates with feedback, or cancels
 3. **Phase 2: 3D Generation** - Multi-agent pipeline uses concept as visual reference
 
+Forge GenAI UI groups this flow into two accordions:
+- **Concept accordion**: prompt + concept generation + recent concept chooser
+- **Model accordion**: model controls + optional concept image input (recent or upload)
+- Direct generation keeps prompt-only behavior when no concept image is supplied
+
 Each track targets a specific domain (geometry, terrain, audio) with constrained responsibilities and validation checkpoints.
 
 **Key Principles:**
@@ -63,6 +68,7 @@ User Prompt
 | `/api/generate/concept/{job_id}/approve` | POST | Approve and start 3D generation |
 | `/api/generate/concept/{job_id}/regenerate` | POST | Regenerate with feedback |
 | `/api/generate/concept/{job_id}` | DELETE | Cancel concept job |
+| `/api/generate/concepts/recent` | GET | List recent accepted concept images for UI pickers |
 
 ---
 
@@ -207,20 +213,48 @@ All SDF primitives use a **right-handed coordinate system**:
 - `+Y rotation`: Rotates left (counter-clockwise from above)
 - `-Y rotation`: Rotates right (clockwise from above)
 
-### Stage A1: The Blacksmith (Form & Massing)
+### Stage A1: The Blacksmith (Form & Massing) — Semantic Assembly
 
-**Task:** Create base silhouette using **Union operations only**.
+**Task:** Create base silhouette using **parts** and **assembly directives**. No coordinates or rotations.
+**Model Note:** Blacksmith can use an OpenAI model when `OPENAI_API_KEY` is set (configured per-agent).
+
+**Architecture:** The Blacksmith outputs a semantic assembly graph (what connects where), and the **Assembly Resolver** (`compiler/assembly_resolver.py`) deterministically computes all world-space transforms. This eliminates LLM spatial math errors.
+
+```
+Blacksmith LLM → parts + assembly + skeleton → Assembly Resolver → SDFRootNode with transforms → Machinist
+```
+
+**Output Schema:**
+- `parts`: List of `PartDefinition` (id, shape, params, role — NO transforms)
+- `assembly`: List of `AssemblyDirective` (part_id, attach_to, face, extends, offset, tilt)
+- `skeleton`: Optional list of `InterfaceBone` (bone at part interfaces)
+- `connections`: Optional list of `Connection` (SEATS_IN, MOUNTS_ON, etc.)
+- `metadata`: Bounds, primary axis, etc.
+
+**Assembly Vocabulary:**
+- **Faces** (where to attach on parent): top, bottom, front, back, left, right, top_front, bottom_back, etc.
+- **Extends** (part's primary axis direction): up, down, forward, backward, left, right
+- **Alignment**: center, flush_front, flush_back, flush_left, flush_right
+- **Offset**: meters along face normal (positive = away, negative = inset)
+- **Tilt**: optional angle for angled parts (e.g. pistol grip)
+
+**Assembly Resolver** (`compiler/assembly_resolver.py`):
+1. Computes AABB for each part from shape + params
+2. Resolves orientation from `extends` directive (cylinder "up" → rot: [90,0,0])
+3. Walks assembly graph to compute world-space positions via named anchors
+4. Places skeleton bones at part interface midpoints
+5. Outputs `SDFRootNode` with transforms (same format Machinist/Artist expect)
 
 **Available Primitives:**
 | Primitive | Parameters | Use Case |
 |-----------|-----------|----------|
 | `sphere` | `radius` | Biological forms, joints |
 | `box` | `size` (half-extents [x,y,z]) | Rectangular prisms |
-| `cylinder` | `radius`, `height` | Barrels, tubes (Z-aligned) |
-| `capsule` | `radius`, `height` | Rounded cylinders (Z-aligned) |
+| `cylinder` | `radius`, `height` | Barrels, tubes |
+| `capsule` | `radius`, `height` | Rounded cylinders |
 | `torus` | `major_r`, `minor_r` | Rings, bands |
-| `cone` | `radius`, `height` | Tapered forms (Z-aligned) |
-| `wedge` | `size` (half-extents), `taper_axis`, `taper_dir` | Triangular prisms (stocks, ramps, fins) |
+| `cone` | `radius`, `height` | Tapered forms |
+| `wedge` | `size` (half-extents), `taper_axis`, `taper_dir` | Triangular prisms (blades, ramps) |
 | `plane` | `normal`, `distance` | Ground planes, cutting |
 | `revolution` | `profile`, `axis`, `offset` | Lathed forms (bowls, vases) |
 | `mandelbulb` | `power`, `iterations`, `scale` | 3D fractals (alien/organic) |
@@ -237,53 +271,23 @@ All SDF primitives use a **right-handed coordinate system**:
 | `round` | `radius` | Bevel edges (meters) |
 | `voronoi` | `cell_size`, `wall_thickness`, `mode` | 3D cellular pattern |
 
-**System Prompt:**
-```
-# ROLE
-You are The Blacksmith. You define the volumetric mass of 3D objects.
-
-# TASK
-Create the base geometry using CSG Union operations only.
-Focus on: silhouette, proportions, major structural blocks.
-
-# CONSTRAINTS
-1. Use ONLY Union operations (no Subtract/Intersect yet)
-2. Tag major blocks with lod_cutoff: 0 (always visible)
-3. NO mechanical details (handles, bolts, vents)
-
-# AVAILABLE API
-{rag_context.api_spec}
-
-# EXAMPLES
-{rag_context.examples}
-
-# OUTPUT FORMAT
+**Example Output (Barrel):**
+```json
 {
-  "sdf_tree": {
-    "type": "operation",
-    "op": "union",
-    "children": [
-      {
-        "id": "unique_id",
-        "type": "primitive",
-        "shape": "box|sphere|cylinder|...",
-        "params": {"size": [x,y,z], "radius": r, ...},
-        "transform": {"pos": [x,y,z], "rot": [x_deg, y_deg, z_deg]},
-        "modifiers": [{"type": "twist", "axis": "y", "rate": 2.0}],
-        "lod_cutoff": 0
-      }
-    ]
-  },
-  "metadata": {
-    "estimated_bounds": {"min": [...], "max": [...]},
-    "primary_axis": "y"
-  }
+  "parts": [
+    {"id": "barrel_body", "shape": "cylinder", "params": {"radius": 0.45, "height": 1.0}, "role": "body"},
+    {"id": "band_top", "shape": "torus", "params": {"major_r": 0.45, "minor_r": 0.02}, "role": "band"},
+    {"id": "band_bottom", "shape": "torus", "params": {"major_r": 0.45, "minor_r": 0.02}, "role": "band"}
+  ],
+  "assembly": [
+    {"part_id": "barrel_body", "attach_to": null, "extends": "up"},
+    {"part_id": "band_top", "attach_to": "barrel_body", "face": "top_25"},
+    {"part_id": "band_bottom", "attach_to": "barrel_body", "face": "bottom_25"}
+  ]
 }
 ```
 
-**RAG Strategy:** Query vector DB for similar assets (e.g., "tank" retrieves validated vehicle structures).
-
-**Integration:** Output feeds into Stage A2 as immutable context.
+**Integration:** Assembly Resolver output feeds into Stage A2 as immutable context.
 
 ---
 
@@ -296,6 +300,8 @@ Focus on: silhouette, proportions, major structural blocks.
 **Parallelization:** Per-part calls are submitted via the [Gemini Batch API](https://ai.google.dev/gemini-api/docs/batch-api) when possible (inline requests, under 20MB total). The concept image is uploaded once via the [Files API](https://ai.google.dev/gemini-api/docs/files) and referenced by `file_uri` in each request to keep the batch payload small. The batch runs in parallel at ~50% of standard cost; the pipeline polls until the job completes (max 30 minutes) then aggregates results. On batch failure or timeout, the pipeline falls back to sequential real-time Machinist calls.
 
 **Key Constraint:** Cannot delete Stage A1 nodes. Only **append** via Delta Patch.
+
+**Patch Limit:** At most 3 subtract operations per `target_node_id`. The pipeline enforces this via post-process filtering; the Machinist prompt instructs the model to prioritize the most important features (main bore, key vent, primary cutout).
 
 **Available Operations:**
 | Operation | Parameters | Effect |
@@ -322,6 +328,7 @@ Enhance the geometry with:
 3. Use specialized functions: Machine_Bore, Machine_Slot, Machine_Array_Radial
 4. Tag features with lod_cutoff: 1 (mid-detail)
 5. Use smooth_subtract with k value for filleted machined edges
+6. Limit to 1-3 operations per target_node_id; prioritize most important features
 
 # CONTEXT (READ-ONLY)
 Stage A1 Output: {stage_a1_json}

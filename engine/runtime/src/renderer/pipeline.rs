@@ -14,7 +14,7 @@ use crate::renderer::types::{
 };
 use crate::renderer::test_geometry::create_test_cube;
 use crate::renderer::view_cube::{ViewCube, CubeFace};
-use crate::renderer::gizmos::AxesGizmo;
+use crate::renderer::gizmos::NodeTranslateGizmo;
 
 // Re-export public types
 pub use crate::renderer::types::{LoadedMesh as LoadedMeshType, RenderConfig as RenderConfigType, Uniforms as UniformsType};
@@ -73,13 +73,15 @@ pub struct Renderer {
     
     // ViewMode control
     pub(crate) viewmode: ViewMode,
-    
+    pub(crate) show_skeleton: bool,
+
     // Camera & Gizmos
     pub(crate) camera_pos: [f32; 3],
     pub(crate) camera_yaw: f32,
     pub(crate) camera_pitch: f32,
     pub(crate) view_cube: ViewCube,
-    pub(crate) axes_gizmo: AxesGizmo,
+    pub(crate) node_gizmo: NodeTranslateGizmo,
+    pub(crate) bone_gizmo: super::bone_gizmo::BoneGizmo,
 }
 
 impl Renderer {
@@ -278,9 +280,17 @@ impl Renderer {
                 triplanar_bounds_max: [1.0, 1.0, 1.0],
                 _pad4: 0.0,
                 ops: [crate::renderer::types::RuntimeVolumeOp {
-                    op_type: 0, _pad0: [0; 3], pos: [0.0; 3], _pad1: 0,
-                    params: [0.0; 8], aabb_min: [0.0; 3], _pad2: 0,
-                    aabb_max: [0.0; 3], _pad3: 0,
+                    op_type: 0,
+                    bone_idx: crate::renderer::types::BONE_IDX_NONE,
+                    _pad0: [0],
+                    _pad0_rest: [0; 2],
+                    pos: [0.0; 3],
+                    _pad1: 0,
+                    params: [0.0; 8],
+                    aabb_min: [0.0; 3],
+                    _pad2: 0,
+                    aabb_max: [0.0; 3],
+                    _pad3: 0,
                 }; 16],
             };
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -407,7 +417,8 @@ impl Renderer {
 
         let depth_texture_view = create_depth_texture(&device, config.width, config.height);
         let view_cube = ViewCube::new(&device, surface_format);
-        let axes_gizmo = AxesGizmo::new(&device, surface_format);
+        let node_gizmo = NodeTranslateGizmo::new(&device, surface_format);
+        let bone_gizmo = super::bone_gizmo::BoneGizmo::new(&device, surface_format);
 
         Self {
             device,
@@ -430,11 +441,13 @@ impl Renderer {
             loaded_volumes: HashMap::new(),
             active_volume: None,
             viewmode: ViewMode::default(),
+            show_skeleton: false,
             camera_pos: [0.0, 0.0, 3.0],
             camera_yaw: -std::f32::consts::FRAC_PI_2,
             camera_pitch: 0.0,
             view_cube,
-            axes_gizmo,
+            node_gizmo,
+            bone_gizmo,
         }
     }
 
@@ -457,13 +470,17 @@ impl Renderer {
     pub fn get_viewmode(&self) -> ViewMode {
         self.viewmode
     }
-    
+
+    /// Set whether skeleton bones are visible (overlay on current view)
+    pub fn set_show_skeleton(&mut self, visible: bool) {
+        self.show_skeleton = visible;
+    }
+
     /// Get debug state snapshot
     pub fn get_debug_state(&self) -> DebugState {
         DebugState {
             view_mode: format!("{:?}", self.viewmode),
-            // active_sdf: None, // Removed
-
+            show_skeleton: self.show_skeleton,
             active_splat: self.active_splat,
             active_volume: self.active_volume,
             camera_pos: self.camera_pos,
@@ -575,8 +592,59 @@ impl Renderer {
         self.view_cube.raycast(mouse_x, mouse_y, self.width, self.height, view_matrix)
     }
 
-    /// Toggle axes gizmo visibility
-    pub fn toggle_axes(&mut self) {
-        self.axes_gizmo.visible = !self.axes_gizmo.visible;
+    /// Set selected node position (shows gizmo at that point)
+    pub fn set_selected_node_pos(&mut self, x: f32, y: f32, z: f32) {
+        self.node_gizmo.set_position([x, y, z]);
+    }
+
+    /// Clear node selection (hides gizmo)
+    pub fn clear_node_selection(&mut self) {
+        self.node_gizmo.clear();
+    }
+
+    /// Pick gizmo part under mouse. Returns 0=none, 1=X, 2=Y, 3=Z, 4=center.
+    pub fn pick_gizmo(&self, mouse_x: f32, mouse_y: f32) -> u32 {
+        let aspect = self.width as f32 / self.height.max(1) as f32;
+        let (view_proj, _) = super::math::calculate_manual_camera(
+            aspect,
+            self.camera_pos,
+            self.camera_yaw,
+            self.camera_pitch,
+        );
+        self.node_gizmo.pick(mouse_x, mouse_y, self.width, self.height, view_proj) as u32
+    }
+
+    /// Drag gizmo. axis: 0=free, 1=X, 2=Y, 3=Z.
+    pub fn drag_gizmo(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        prev_mouse_x: f32,
+        prev_mouse_y: f32,
+        axis: u32,
+    ) {
+        let aspect = self.width as f32 / self.height.max(1) as f32;
+        let (view_proj, eye) = super::math::calculate_manual_camera(
+            aspect,
+            self.camera_pos,
+            self.camera_yaw,
+            self.camera_pitch,
+        );
+        self.node_gizmo.drag(
+            mouse_x,
+            mouse_y,
+            prev_mouse_x,
+            prev_mouse_y,
+            self.width,
+            self.height,
+            view_proj,
+            eye.to_array(),
+            axis,
+        );
+    }
+
+    /// Get current gizmo position (for syncing to property editor)
+    pub fn get_selected_node_pos(&self) -> [f32; 3] {
+        self.node_gizmo.position
     }
 }

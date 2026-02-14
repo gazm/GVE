@@ -383,6 +383,9 @@ async def inject_rag_context(track: str, user_prompt: str) -> dict[str, Any]:
         "finish_registry": None,
         "noise_configs": None,
         "blacksmith_guidance": "",
+        "machinist_guidance": "",
+        "artist_guidance": "",
+        "spatial_guidance": "",
     }
     
     # No semantic search - examples can teach bad patterns (wrong orientation, etc.)
@@ -393,7 +396,13 @@ async def inject_rag_context(track: str, user_prompt: str) -> dict[str, Any]:
         context["material_registry"] = _get_material_registry()
         context["finish_registry"] = _get_finish_registry()
         from .rag_blacksmith import get_blacksmith_guidance
+        from .rag_machinist import get_machinist_guidance
+        from .rag_artist import get_artist_guidance
+        from .rag_spatial import get_spatial_guidance
         context["blacksmith_guidance"] = get_blacksmith_guidance(user_prompt)
+        context["machinist_guidance"] = get_machinist_guidance(user_prompt)
+        context["artist_guidance"] = get_artist_guidance(user_prompt)
+        context["spatial_guidance"] = get_spatial_guidance(user_prompt)
     elif track in ("landscape", "LANDSCAPE"):
         context["noise_configs"] = _get_noise_configs()
     
@@ -409,9 +418,7 @@ def _get_api_spec(track: str) -> dict[str, Any]:
     """
     return {
         "orientation_notes": {
-            "cylinders": "Z-axis aligned (height along Z). Vertical structures (barrels, columns, grips, lids): use rot: [90, 0, 0].",
-            "torus": "Ring in XZ plane (hole along Y). Vertical barrel bands: no rotation. Horizontal cylinder bands: rot: [90, 0, 0].",
-            "wedge": "Use for blades, fins, ramps. Avoids sub-voxel thickness vs box+taper.",
+            "note": "Primitive orientations are handled by the assembly resolver via CAD mate constraints (parent_face/child_face). Machinist uses world-space coordinates.",
         },
         "primitives": [
             "Sphere(radius)",
@@ -438,9 +445,10 @@ def _get_api_spec(track: str) -> dict[str, Any]:
         "modifiers": {
             "twist": {"params": ["axis", "rate"], "desc": "Spiral along axis (rate = rad/m)"},
             "bend": {"params": ["axis", "angle"], "desc": "Curve shape (angle rad). Mod angle 0.3-0.8."},
-            "taper": {"params": ["axis", "scale_min", "scale_max"], "desc": "scale_min >= 0.15. JIT only."},
+            "taper": {"params": ["axis", "scale_min", "scale_max"], "desc": "Narrow/widen cross-section along axis. scale_min >= 0.15."},
             "mirror": {"params": ["axis"], "desc": "Symmetry across axis plane"},
-            "round": {"params": ["radius"], "desc": "Bevel edges (m)"},
+            "round": {"params": ["radius"], "desc": "Curved bevel on edges (m)"},
+            "chamfer": {"params": ["width"], "desc": "Flat 45-degree bevel on edges (m). Like a milling chamfer cut."},
             "voronoi": {
                 "params": ["cell_size", "wall_thickness", "mode"],
                 "desc": "mode: subtract or intersect",
@@ -452,6 +460,7 @@ def _get_api_spec(track: str) -> dict[str, Any]:
             '{"type": "taper", "axis": "y", "scale_min": 0.2, "scale_max": 1.0}',
             '{"type": "mirror", "axis": "x"}',
             '{"type": "round", "radius": 0.02}',
+            '{"type": "chamfer", "width": 0.01}',
             '{"type": "voronoi", "cell_size": 0.2, "wall_thickness": 0.02, "mode": "subtract"}',
         ],
         "texture_patterns": {

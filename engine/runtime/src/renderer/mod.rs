@@ -29,6 +29,7 @@ pub mod math;
 pub mod lod;
 pub mod view_cube;
 pub mod gizmos;
+pub mod bone_gizmo;
 mod asset_management;  // Extends Renderer with load/unload/asset state
 mod render_passes;     // SDF, Volume, Mesh render passes
 mod splat_passes;      // Splat passes

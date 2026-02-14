@@ -60,140 +60,216 @@
                 <h2>Generate</h2>
             </header>
             <div class="panel-content">
-                <!-- Content skipped for brevity -->
-                <!-- Asset Type Selector -->
-                <div class="form-group">
-                    <label>Asset Type</label>
-                    <div class="type-selector">
-                        <button class="type-btn active" data-type="prop">Prop</button>
-                        <button class="type-btn" data-type="weapon">Weapon</button>
-                        <button class="type-btn" data-type="vehicle">Vehicle</button>
-                        <button class="type-btn" data-type="character">Character</button>
-                    </div>
-                </div>
+                <div class="accordion-container genai-accordion">
+                    <div class="accordion-item">
+                        <button type="button" class="accordion-header">
+                            <span>Concept</span>
+                            <span>▾</span>
+                        </button>
+                        <div class="accordion-content">
+                            <div class="accordion-section-content">
+                                <!-- Prompt Input -->
+                                <div class="form-group">
+                                    <label for="ai-prompt">Describe your asset</label>
+                                    <textarea id="ai-prompt" class="prompt-input" rows="3"
+                                        placeholder="e.g., rusty AK-47 with wooden stock"></textarea>
+                                </div>
 
-                <!-- Prompt Input -->
-                <div class="form-group">
-                    <label for="ai-prompt">Describe your asset</label>
-                    <textarea id="ai-prompt" class="prompt-input" rows="3"
-                        placeholder="e.g., rusty AK-47 with wooden stock"></textarea>
-                </div>
+                                <!-- Generate Button -->
+                                <button id="btn-generate" class="btn-generate" onclick="generateAsset()">
+                                    <span class="icon">🎨</span> <span id="btn-generate-text">Generate Concept</span>
+                                </button>
 
-                <!-- Style Options -->
-                <div class="form-group">
-                    <label>Style</label>
-                    <div class="style-chips">
-                        <button class="chip" data-style="realistic">Realistic</button>
-                        <button class="chip active" data-style="stylized">Stylized</button>
-                        <button class="chip" data-style="worn">Worn</button>
-                        <button class="chip" data-style="pristine">Pristine</button>
-                    </div>
-                </div>
+                                <!-- Recent Concepts -->
+                                <div class="form-group">
+                                    <label>Recent Concepts</label>
+                                    <div id="recent-concepts" class="concept-recent-grid">
+                                        <span class="chip-placeholder">Generate a concept or pick an accepted one.</span>
+                                    </div>
+                                </div>
 
-                <!-- Quality / Resolution Slider -->
-                <div class="form-group">
-                    <div class="label-row">
-                        <label>Quality</label>
-                        <span id="quality-value" class="slider-value">Standard</span>
-                    </div>
-                    <input type="range" id="ai-quality" class="slider" min="0" max="3" step="1" value="1">
-                    <div class="slider-labels">
-                        <span>Draft</span>
-                        <span>Std</span>
-                        <span>High</span>
-                        <span>Ultra</span>
-                    </div>
-                </div>
+                                <!-- Concept Preview Container (Two-Phase Workflow) -->
+                                <div id="concept-preview" class="concept-preview" style="display: none;">
+                                    <div class="concept-preview-header">
+                                        <h4>🎨 Concept Preview</h4>
+                                        <p id="concept-prompt-display" class="concept-prompt"></p>
+                                    </div>
+                                    <div class="concept-image-container">
+                                        <img id="concept-image" src="" alt="Concept preview" class="concept-image">
+                                    </div>
+                                    <div class="concept-actions">
+                                        <button class="btn btn-primary" id="btn-approve-concept">
+                                            <span class="icon">✅</span> Approve & Generate 3D
+                                        </button>
+                                        <button class="btn btn-secondary" id="btn-regenerate-concept">
+                                            <span class="icon">🔄</span> Regenerate
+                                        </button>
+                                        <button class="btn btn-ghost" id="btn-cancel-concept">
+                                            <span class="icon">❌</span> Cancel
+                                        </button>
+                                    </div>
+                                </div>
 
-                <!-- Material Suggestion -->
-                <div class="form-group">
-                    <label>Suggested Materials</label>
-                    <div id="material-suggestions" class="material-chips">
-                        <span class="chip-placeholder">Enter a prompt to see suggestions...</span>
-                    </div>
-                </div>
-
-                <!-- Workflow Mode Toggle -->
-                <div class="form-group workflow-mode">
-                    <label class="toggle-label">
-                        <input type="checkbox" id="skip-concept" class="toggle-checkbox">
-                        <span class="toggle-text">Skip concept preview (direct 3D)</span>
-                    </label>
-                </div>
-
-                <!-- Generate Button -->
-                <button id="btn-generate" class="btn-generate" onclick="generateAsset()">
-                    <span class="icon">🎨</span> <span id="btn-generate-text">Generate Concept</span>
-                </button>
-
-                <!-- Cost Estimate -->
-                <div class="cost-estimate">
-                    <span class="estimate-label">Estimated:</span>
-                    <span class="estimate-cost" id="cost-estimate">$0.00</span>
-                    <span class="estimate-time">~0s</span>
-                </div>
-
-                <!-- Stage Progress Indicator (3D Generation) -->
-                <div id="stage-progress" class="stage-progress" style="display: none;">
-                    <div class="stage-progress-header">
-                        <span class="stage-progress-label">Generating 3D Asset</span>
-                    </div>
-                    <div class="stage-progress-items">
-                        <div class="stage-item pending" data-stage="A1">
-                            <span class="stage-icon">1</span>
-                            <span class="stage-name">Form</span>
-                            <span class="stage-status"></span>
-                        </div>
-                        <div class="stage-connector"></div>
-                        <div class="stage-item pending" data-stage="A2">
-                            <span class="stage-icon">2</span>
-                            <span class="stage-name">Details</span>
-                            <span class="stage-status"></span>
-                        </div>
-                        <div class="stage-connector"></div>
-                        <div class="stage-item pending" data-stage="A3">
-                            <span class="stage-icon">3</span>
-                            <span class="stage-name">Materials</span>
-                            <span class="stage-status"></span>
+                                <!-- Regenerate Feedback Dialog -->
+                                <div id="regenerate-dialog" class="regenerate-dialog" style="display: none;">
+                                    <div class="dialog-header">
+                                        <h4>🔄 Regenerate Concept</h4>
+                                    </div>
+                                    <div class="dialog-content">
+                                        <label for="regenerate-feedback">What would you like to change?</label>
+                                        <textarea id="regenerate-feedback" class="prompt-input" rows="2"
+                                            placeholder="e.g., make it more rusty, add more detail, change the angle..."></textarea>
+                                    </div>
+                                    <div class="dialog-actions">
+                                        <button class="btn btn-primary" id="btn-submit-regenerate">Regenerate</button>
+                                        <button class="btn btn-ghost" id="btn-cancel-regenerate">Cancel</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Concept Preview Container (Two-Phase Workflow) -->
-                <div id="concept-preview" class="concept-preview" style="display: none;">
-                    <div class="concept-preview-header">
-                        <h4>🎨 Concept Preview</h4>
-                        <p id="concept-prompt-display" class="concept-prompt"></p>
-                    </div>
-                    <div class="concept-image-container">
-                        <img id="concept-image" src="" alt="Concept preview" class="concept-image">
-                    </div>
-                    <div class="concept-actions">
-                        <button class="btn btn-primary" id="btn-approve-concept">
-                            <span class="icon">✅</span> Approve & Generate 3D
+                    <div class="accordion-item">
+                        <button type="button" class="accordion-header">
+                            <span>Model</span>
+                            <span>▾</span>
                         </button>
-                        <button class="btn btn-secondary" id="btn-regenerate-concept">
-                            <span class="icon">🔄</span> Regenerate
-                        </button>
-                        <button class="btn btn-ghost" id="btn-cancel-concept">
-                            <span class="icon">❌</span> Cancel
-                        </button>
-                    </div>
-                </div>
+                        <div class="accordion-content">
+                            <div class="accordion-section-content">
+                                <!-- Prompt Input (Model Generation) -->
+                                <div class="form-group">
+                                    <label for="ai-prompt-model">Describe your asset</label>
+                                    <textarea id="ai-prompt-model" class="prompt-input" rows="3"
+                                        placeholder="e.g., rusty AK-47 with wooden stock"></textarea>
+                                </div>
 
-                <!-- Regenerate Feedback Dialog -->
-                <div id="regenerate-dialog" class="regenerate-dialog" style="display: none;">
-                    <div class="dialog-header">
-                        <h4>🔄 Regenerate Concept</h4>
-                    </div>
-                    <div class="dialog-content">
-                        <label for="regenerate-feedback">What would you like to change?</label>
-                        <textarea id="regenerate-feedback" class="prompt-input" rows="2"
-                            placeholder="e.g., make it more rusty, add more detail, change the angle..."></textarea>
-                    </div>
-                    <div class="dialog-actions">
-                        <button class="btn btn-primary" id="btn-submit-regenerate">Regenerate</button>
-                        <button class="btn btn-ghost" id="btn-cancel-regenerate">Cancel</button>
+                                <!-- Asset Type Selector -->
+                                <div class="form-group">
+                                    <label>Asset Type</label>
+                                    <div class="type-selector">
+                                        <button class="type-btn active" data-type="prop">Prop</button>
+                                        <button class="type-btn" data-type="weapon">Weapon</button>
+                                        <button class="type-btn" data-type="vehicle">Vehicle</button>
+                                        <button class="type-btn" data-type="character">Character</button>
+                                    </div>
+                                </div>
+
+                                <!-- Style Options -->
+                                <div class="form-group">
+                                    <label>Style</label>
+                                    <div class="style-chips">
+                                        <button class="chip" data-style="realistic">Realistic</button>
+                                        <button class="chip active" data-style="stylized">Stylized</button>
+                                        <button class="chip" data-style="worn">Worn</button>
+                                        <button class="chip" data-style="pristine">Pristine</button>
+                                    </div>
+                                </div>
+
+                                <!-- Quality / Resolution Slider -->
+                                <div class="form-group">
+                                    <div class="label-row">
+                                        <label>Quality</label>
+                                        <span id="quality-value" class="slider-value">Standard</span>
+                                    </div>
+                                    <input type="range" id="ai-quality" class="slider" min="0" max="3" step="1" value="1">
+                                    <div class="slider-labels">
+                                        <span>Draft</span>
+                                        <span>Std</span>
+                                        <span>High</span>
+                                        <span>Ultra</span>
+                                    </div>
+                                </div>
+
+                                <!-- Material Suggestion -->
+                                <div class="form-group">
+                                    <label>Suggested Materials</label>
+                                    <div id="material-suggestions" class="material-chips">
+                                        <span class="chip-placeholder">Enter a prompt to see suggestions...</span>
+                                    </div>
+                                </div>
+
+                                <!-- Concept Image Input -->
+                                <div class="form-group">
+                                    <label>Concept Image (Optional)</label>
+                                    <div class="model-concept-actions">
+                                        <input type="file" id="model-concept-upload" accept="image/png,image/jpeg,image/webp">
+                                        <button type="button" class="btn-sm" id="btn-clear-selected-concept">Clear Selection</button>
+                                    </div>
+                                    <div id="selected-concept-preview" class="selected-concept-preview" style="display: none;">
+                                        <img id="selected-concept-image" alt="Selected concept reference">
+                                        <p id="selected-concept-meta" class="selected-concept-meta"></p>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>Use Recent Concept</label>
+                                    <div id="model-concept-choices" class="concept-recent-grid">
+                                        <span class="chip-placeholder">No recent concepts available.</span>
+                                    </div>
+                                </div>
+
+                                <!-- Model Selector -->
+                                <div class="form-group">
+                                    <label for="model-selector">Model</label>
+                                    <select id="model-selector" class="prompt-input">
+                                        <option value="">Auto (Current Default)</option>
+                                        <option value="gemini">Gemini</option>
+                                        <option value="openai">OpenAI</option>
+                                    </select>
+                                </div>
+
+                                <!-- Workflow Mode Toggle -->
+                                <div class="form-group workflow-mode">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="skip-concept" class="toggle-checkbox">
+                                        <span class="toggle-text">Skip concept preview (direct 3D)</span>
+                                    </label>
+                                </div>
+
+                                <!-- Generate Model Button -->
+                                <button id="btn-generate-model" class="btn-generate" onclick="generateAssetDirect()">
+                                    <span class="icon">⚡</span> <span>Generate Model</span>
+                                </button>
+
+                                <!-- Cost Estimate -->
+                                <div class="cost-estimate">
+                                    <span class="estimate-label">Estimated:</span>
+                                    <span class="estimate-cost" id="cost-estimate">$0.00</span>
+                                    <span class="estimate-time">~0s</span>
+                                </div>
+
+                                <!-- Stage Progress Indicator (3D Generation) -->
+                                <div id="stage-progress" class="stage-progress" style="display: none;">
+                                    <div class="stage-progress-header">
+                                        <span class="stage-progress-label">Generating 3D Asset</span>
+                                    </div>
+                                    <div id="stage-review-actions" class="stage-review-actions" style="display: none;">
+                                        <span class="stage-review-label">Review Blacksmith output:</span>
+                                        <button type="button" class="btn btn-primary btn-sm" id="btn-continue-stage">Continue</button>
+                                        <button type="button" class="btn btn-ghost btn-sm" id="btn-reject-stage">Reject</button>
+                                    </div>
+                                    <div class="stage-progress-items">
+                                        <div class="stage-item pending" data-stage="A1">
+                                            <span class="stage-icon">1</span>
+                                            <span class="stage-name">Form</span>
+                                            <span class="stage-status"></span>
+                                        </div>
+                                        <div class="stage-connector"></div>
+                                        <div class="stage-item pending" data-stage="A2">
+                                            <span class="stage-icon">2</span>
+                                            <span class="stage-name">Details</span>
+                                            <span class="stage-status"></span>
+                                        </div>
+                                        <div class="stage-connector"></div>
+                                        <div class="stage-item pending" data-stage="A3">
+                                            <span class="stage-icon">3</span>
+                                            <span class="stage-name">Materials</span>
+                                            <span class="stage-status"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -14,6 +14,7 @@ export const ui = {
 
     // Buttons
     btnGenerate: document.getElementById('btn-generate'),
+    btnGenerateModel: document.getElementById('btn-generate-model'),
     btnGenerateText: document.getElementById('btn-generate-text'),
     btnApprove: document.getElementById('btn-approve-concept'),
     btnRegenerate: document.getElementById('btn-regenerate-concept'),
@@ -29,6 +30,13 @@ export const ui = {
     estimateTime: document.querySelector('.estimate-time'),
     outputLog: document.getElementById('generation-output'),
     materialSuggestions: document.getElementById('material-suggestions'),
+    recentConcepts: document.getElementById('recent-concepts'),
+    modelConceptChoices: document.getElementById('model-concept-choices'),
+    modelConceptUpload: document.getElementById('model-concept-upload'),
+    btnClearSelectedConcept: document.getElementById('btn-clear-selected-concept'),
+    selectedConceptPreview: document.getElementById('selected-concept-preview'),
+    selectedConceptImage: document.getElementById('selected-concept-image'),
+    selectedConceptMeta: document.getElementById('selected-concept-meta'),
 
     // Selectors
     typeBtns: document.querySelectorAll('.type-btn'),
@@ -69,6 +77,7 @@ export function clearOutput() {
  */
 export function updateGenerateButtonState(isGenerating, mode = 'concept', textOverride = null) {
     ui.btnGenerate.disabled = isGenerating;
+    if (ui.btnGenerateModel) ui.btnGenerateModel.disabled = isGenerating;
 
     if (textOverride) {
         ui.btnGenerate.innerHTML = textOverride;
@@ -147,6 +156,16 @@ export function updateStageProgress(stage, status) {
     }
 }
 
+export function showStageReviewActions() {
+    const el = document.getElementById('stage-review-actions');
+    if (el) el.style.display = 'flex';
+}
+
+export function hideStageReviewActions() {
+    const el = document.getElementById('stage-review-actions');
+    if (el) el.style.display = 'none';
+}
+
 // =============================================================================
 // Feedback & Cost UI
 // =============================================================================
@@ -178,6 +197,45 @@ export function renderMaterialSuggestionsError() {
     if (ui.materialSuggestions) {
         ui.materialSuggestions.innerHTML = '<span class="chip-placeholder">Failed to load suggestions</span>';
     }
+}
+
+export function renderRecentConceptPickers(items, selectedKey = null) {
+    const escapeHtml = (value) => String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+
+    const html = items.length > 0
+        ? items.map(item => `
+            <button type="button" class="concept-thumb-btn${item.key === selectedKey ? ' active' : ''}" onclick="window.selectRecentConcept('${item.key}')">
+                <img src="data:image/png;base64,${item.concept_image}" alt="Concept option">
+                <span class="concept-thumb-meta">${escapeHtml(item.prompt || 'Concept')}</span>
+            </button>
+        `).join('')
+        : '<span class="chip-placeholder">No recent concepts available.</span>';
+
+    if (ui.recentConcepts) ui.recentConcepts.innerHTML = html;
+    if (ui.modelConceptChoices) ui.modelConceptChoices.innerHTML = html;
+}
+
+export function showSelectedConceptPreview(imageBase64, label) {
+    if (ui.selectedConceptImage) {
+        ui.selectedConceptImage.src = `data:image/png;base64,${imageBase64}`;
+    }
+    if (ui.selectedConceptMeta) {
+        ui.selectedConceptMeta.textContent = label || 'Selected concept image';
+    }
+    if (ui.selectedConceptPreview) {
+        ui.selectedConceptPreview.style.display = 'flex';
+    }
+}
+
+export function hideSelectedConceptPreview() {
+    if (ui.selectedConceptPreview) ui.selectedConceptPreview.style.display = 'none';
+    if (ui.selectedConceptImage) ui.selectedConceptImage.src = '';
+    if (ui.selectedConceptMeta) ui.selectedConceptMeta.textContent = '';
 }
 
 // Make logOutput globally available for other modules if needed (optional)

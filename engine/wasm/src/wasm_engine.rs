@@ -131,6 +131,33 @@ impl WasmEngine {
         let _ = (chunk_id, x, z);
     }
 
+    pub fn set_selected_node_pos(&mut self, x: f32, y: f32, z: f32) {
+        self.renderer.set_selected_node_pos(x, y, z);
+    }
+
+    pub fn clear_node_selection(&mut self) {
+        self.renderer.clear_node_selection();
+    }
+
+    pub fn pick_gizmo(&self, mouse_x: f32, mouse_y: f32) -> u32 {
+        self.renderer.pick_gizmo(mouse_x, mouse_y)
+    }
+
+    pub fn drag_gizmo(
+        &mut self,
+        mouse_x: f32,
+        mouse_y: f32,
+        prev_mouse_x: f32,
+        prev_mouse_y: f32,
+        axis: u32,
+    ) {
+        self.renderer.drag_gizmo(mouse_x, mouse_y, prev_mouse_x, prev_mouse_y, axis);
+    }
+
+    pub fn get_selected_node_pos(&self) -> Vec<f32> {
+        self.renderer.get_selected_node_pos().to_vec()
+    }
+
     pub fn translate_node(&mut self, node_id: u64, dx: f32, dy: f32, dz: f32) {
         #[cfg(debug_assertions)]
         web_sys::console::log_1(&format!(

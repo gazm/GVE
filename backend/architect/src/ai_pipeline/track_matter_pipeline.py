@@ -26,15 +26,57 @@ from .orchestrator import GenerationState
 from .track_matter_agents import BlacksmithAgent, MachinistAgent, ArtistAgent
 from .track_matter_schemas import (
     BlacksmithOutput,
+    BlacksmithOutputLegacy,
     MachinistOutput,
     MachinistDeltaPatchList,
     ArtistOutput,
     SDFRootNode,
     SDFNode,
+    SkeletonData,
+    Connection,
 )
 
-# Type for stage completion callback: (stage_name, preview_binary) -> None
-StageCompleteCallback = Callable[[str, bytes], Awaitable[None]]
+class GenerationRejectedByUser(Exception):
+    """Raised when user rejects stage output (e.g. A1 Blacksmith) and exits generation."""
+
+
+# Type for stage completion callback: (stage_name, preview_binary) -> bool
+# Returns True to continue, False to abort (e.g. user rejected A1 output)
+StageCompleteCallback = Callable[[str, bytes], Awaitable[bool]]
+
+MAX_SUBTRACT_PER_NODE = 2
+MAX_ADD_PER_NODE = 3
+
+
+def _apply_ai_provider(agent: Any, ai_provider: str | None) -> None:
+    """
+    Configure agent model by provider preference.
+
+    - openai: force GPT model id
+    - gemini: force Gemini model id
+    - None/unknown: keep current defaults
+    """
+    if ai_provider == "openai":
+        agent.model_name = "gpt-5.2"
+    elif ai_provider == "gemini":
+        agent.model_name = "gemini-3-pro-preview"
+
+
+def _provider_and_model(agent: Any) -> tuple[str, str]:
+    """
+    Return configured provider/model for debug logging.
+
+    This reflects the configured route before runtime fallback behavior.
+    """
+    model_name = getattr(agent, "model_name", "unknown")
+    is_openai = False
+    if hasattr(agent, "_is_openai_model"):
+        try:
+            is_openai = bool(agent._is_openai_model())
+        except Exception:
+            is_openai = False
+    provider = "openai" if is_openai else "gemini"
+    return provider, model_name
 
 
 async def execute_matter_pipeline(
@@ -80,6 +122,9 @@ async def execute_matter_pipeline(
         # =================================================================
         print("  [A1] Initializing Blacksmith agent...")
         blacksmith = BlacksmithAgent()
+        _apply_ai_provider(blacksmith, state.ai_provider)
+        provider, model = _provider_and_model(blacksmith)
+        print(f"  [A1] 🤖 LLM provider={provider} model={model}")
         ctx = state.to_agent_context()
         
         if has_concept and concept_image_path:
@@ -90,11 +135,9 @@ async def execute_matter_pipeline(
             a1_output = await blacksmith.generate(ctx)
         
         print("  [A1] Blacksmith returned, processing output...")
-        state.stage_outputs["a1"] = a1_output.model_dump()
-        node_count = _count_nodes(a1_output.sdf_tree)
-        print(f"  └─ Blacksmith: Generated {node_count} nodes")
+        print(f"  └─ Blacksmith: {len(a1_output.parts)} parts, {len(a1_output.assembly)} constraints")
         
-        # DEBUG: A1-only dump (no Machinist patches or Artist materials; those are merged later)
+        # DEBUG: Save raw Blacksmith output (semantic assembly, pre-resolver)
         try:
             debug_path = Path("C:/Users/Admin/.gemini/antigravity/brain/841a62e8-04ec-4fa6-a929-17ec9329c080/debug_a1_output.json")
             with open(debug_path, "w") as f:
@@ -103,20 +146,55 @@ async def execute_matter_pipeline(
         except Exception as e:
             print(f"  ⚠️ Failed to save debug JSON: {e}")
         
-        # Stage A1 preview callback
+        # =================================================================
+        # Assembly Resolver: convert semantic assembly → positioned SDF tree
+        # =================================================================
+        print("  [A1.5] Running assembly resolver...")
+        from ..compiler.assembly_resolver import resolve_assembly, resolved_to_sdf_tree, resolved_to_skeleton
+        
+        resolved = resolve_assembly(a1_output.model_dump())
+        sdf_tree_dict = resolved_to_sdf_tree(resolved)
+        skeleton_dict = resolved_to_skeleton(resolved)
+        
+        # Build legacy-compatible wrapper for downstream pipeline (Machinist/Artist)
+        # Use resolved.metadata (has estimated_bounds from resolver), not a1_output.metadata
+        a1_legacy = BlacksmithOutputLegacy(
+            reasoning=a1_output.reasoning,
+            sdf_tree=SDFRootNode.model_validate(sdf_tree_dict),
+            skeleton=SkeletonData.model_validate(skeleton_dict) if skeleton_dict else None,
+            connections=[Connection.model_validate(c) for c in resolved.connections] if resolved.connections else a1_output.connections,
+            metadata=resolved.metadata,
+        )
+        
+        # Store resolved output (legacy format) for Machinist/Artist stages
+        state.stage_outputs["a1"] = a1_legacy.model_dump()
+        node_count = _count_nodes(a1_legacy.sdf_tree)
+        print(f"  └─ Resolver: Positioned {node_count} nodes")
+        
+        # Use legacy wrapper for all downstream operations
+        a1_output = a1_legacy  # type: ignore[assignment]
+        
+        # Stage A1 preview callback - user can reject bad Blacksmith output
         if on_stage_complete:
             a1_dna = _build_intermediate_dna(a1_output, None, None)
             preview_bytes = await _draft_compile_for_preview(a1_dna, "A1")
             if preview_bytes:
-                await on_stage_complete("A1", preview_bytes)
+                should_continue = await on_stage_complete("A1", preview_bytes)
+                if not should_continue:
+                    print("  [A1] User rejected Blacksmith output - stopping pipeline")
+                    raise GenerationRejectedByUser("User rejected A1 (Blacksmith) output")
         
         # =================================================================
         # Stage A2: Machinist (Function & Negative Space) - per part
         # =================================================================
         print("  [A2] Initializing Machinist agent...")
         machinist = MachinistAgent()
+        _apply_ai_provider(machinist, state.ai_provider)
+        provider, model = _provider_and_model(machinist)
+        print(f"  [A2] 🤖 LLM provider={provider} model={model}")
         parts = [c for c in a1_output.sdf_tree.children if getattr(c, "id", None)]
         
+        a2_raw_count = 0
         if not parts:
             # Fallback: one global Machinist call (no top-level parts with id)
             print("  [A2] No parts with id found, using single asset-wide Machinist call...")
@@ -125,14 +203,32 @@ async def execute_matter_pipeline(
                 a2_output = await machinist.generate_with_image(ctx, concept_image_path)
             else:
                 a2_output = await machinist.generate(ctx)
+            ops = a2_output.delta_patch.add_operations if a2_output.delta_patch else []
+            a2_raw_count = len(ops)
+            limited = _limit_patches_per_node(ops)
+            a2_output = MachinistOutput(delta_patch=MachinistDeltaPatchList(add_operations=limited))
             state.stage_outputs["a2"] = a2_output.model_dump()
         else:
-            # Try Batch API first (parallel, ~50% cost); fall back to sequential on failure/timeout
-            aggregated = await _run_machinist_batch(
-                machinist, parts, state, concept_image_path if has_concept else None
+            # Strategy: asyncio.gather (fast) → batch for 10+ parts (cheap) → sequential (last resort)
+            _BATCH_THRESHOLD = 10
+            aggregated: list[Any] | None = None
+
+            # Primary: parallel via asyncio.gather (fastest for typical 3-8 part assets)
+            aggregated = await _run_machinist_parallel(
+                machinist, parts, state,
+                concept_image_path if has_concept else None,
             )
+
+            # Fallback: batch API for large assets (10+ parts, ~50% cost)
+            if aggregated is None and len(parts) >= _BATCH_THRESHOLD:
+                aggregated = await _run_machinist_batch(
+                    machinist, parts, state,
+                    concept_image_path if has_concept else None,
+                )
+
+            # Last resort: sequential (rate-limited or all else failed)
             if aggregated is None:
-                print("  [A2] Running Machinist sequentially (fallback)...")
+                print("  [A2] 🐌 Running Machinist sequentially (last resort)...")
                 aggregated = []
                 for i, part in enumerate(parts):
                     part_id = getattr(part, "id", "")
@@ -141,7 +237,7 @@ async def execute_matter_pipeline(
                         user_prompt=state.user_prompt,
                         rag_context=state.rag_context,
                         previous_outputs={
-                            "a1": _strip_dna_for_context(state.stage_outputs["a1"]), # Full A1 can be large, use lite version
+                            "a1": _strip_dna_for_context(state.stage_outputs["a1"]),
                             "a1_part": {"part_id": part_id, "part": part.model_dump()},
                         },
                         style_token=state.style_token,
@@ -152,19 +248,23 @@ async def execute_matter_pipeline(
                         a2_part_output = await machinist.generate(part_ctx)
                     ops = a2_part_output.delta_patch.add_operations if a2_part_output.delta_patch else []
                     aggregated.extend(ops)
+            a2_raw_count = len(aggregated)
+            aggregated = _limit_patches_per_node(aggregated)
             a2_output = MachinistOutput(delta_patch=MachinistDeltaPatchList(add_operations=aggregated))
             state.stage_outputs["a2"] = a2_output.model_dump()
         
         print("  [A2] Machinist returned, processing output...")
         patch_count = _count_patches(a2_output)
         print(f"  └─ Machinist: Generated {patch_count} patches")
+        if a2_raw_count > patch_count:
+            print(f"  └─ Limit patches: {patch_count} kept, {a2_raw_count - patch_count} dropped (max {MAX_SUBTRACT_PER_NODE} subtract + {MAX_ADD_PER_NODE} add per node)")
         
         # Stage A2 preview callback
         if on_stage_complete:
             a2_dna = _build_intermediate_dna(a1_output, a2_output, None)
             preview_bytes = await _draft_compile_for_preview(a2_dna, "A2")
             if preview_bytes:
-                await on_stage_complete("A2", preview_bytes)
+                await on_stage_complete("A2", preview_bytes)  # Returns True to continue
         
         # =================================================================
         # Stage A2.5: Material Prep (Auto-Tune)
@@ -179,6 +279,9 @@ async def execute_matter_pipeline(
         # =================================================================
         print("  [A3] Initializing Artist agent...")
         artist = ArtistAgent()
+        _apply_ai_provider(artist, state.ai_provider)
+        provider, model = _provider_and_model(artist)
+        print(f"  [A3] 🤖 LLM provider={provider} model={model}")
         # Artist only needs IDs and types for material assignment. Strip params/transforms.
         artist_prev_outputs = {
             "a1": _strip_dna_for_context(state.stage_outputs["a1"], strip_params=True),
@@ -250,7 +353,7 @@ async def _draft_compile_for_preview(dna: dict[str, Any], stage: str) -> bytes |
 
 
 def _build_intermediate_dna(
-    a1: BlacksmithOutput,
+    a1: BlacksmithOutputLegacy,
     a2: MachinistOutput | None,
     a3: ArtistOutput | None,
 ) -> dict[str, Any]:
@@ -264,6 +367,14 @@ def _build_intermediate_dna(
         "root_node": root_node,
         "metadata": a1.metadata if isinstance(a1.metadata, dict) else {},
     }
+    
+    # Add skeleton if present (animated_character, animated_weapon)
+    if a1.skeleton is not None:
+        dna["skeleton"] = a1.skeleton.model_dump()
+
+    # Pass connections to DNA (Machinist reads these for bolt/cavity context)
+    if a1.connections:
+        dna["connections"] = [c.model_dump() if hasattr(c, "model_dump") else c for c in a1.connections]
     
     # Add A2 patches if available
     if a2 and a2.delta_patch:
@@ -321,10 +432,79 @@ def _save_concept_to_temp(concept_image_base64: str) -> Path:
     return Path(path)
 
 
-# Batch API: max wait then fall back to sequential (Batch target turnaround is up to 24h)
-_MACHINIST_BATCH_POLL_INTERVAL_SEC = 15
+# ---------------------------------------------------------------------------
+# Machinist execution strategies (ordered by preference)
+# ---------------------------------------------------------------------------
+
+_MACHINIST_PARALLEL_SEMAPHORE = 4  # Max concurrent LLM calls (avoid rate limits)
+
+
+async def _run_machinist_parallel(
+    machinist: MachinistAgent,
+    parts: list[SDFNode],
+    state: GenerationState,
+    concept_image_path: Path | None,
+) -> list[Any] | None:
+    """Run Machinist for all parts via asyncio.gather with a concurrency semaphore.
+
+    Returns aggregated add_operations or None on failure (caller falls back).
+    """
+    sem = asyncio.Semaphore(_MACHINIST_PARALLEL_SEMAPHORE)
+    a1_lite = _strip_dna_for_context(state.stage_outputs["a1"])
+
+    async def _run_part(idx: int, part: SDFNode) -> list[Any]:
+        async with sem:
+            part_id = getattr(part, "id", "")
+            print(f"  [A2] ⚡ Parallel machinist for part {idx + 1}/{len(parts)}: {part_id}")
+            part_ctx = AgentContext(
+                user_prompt=state.user_prompt,
+                rag_context=state.rag_context,
+                previous_outputs={
+                    "a1": a1_lite,
+                    "a1_part": {"part_id": part_id, "part": part.model_dump()},
+                },
+                style_token=state.style_token,
+            )
+            if concept_image_path:
+                out = await machinist.generate_with_image(part_ctx, concept_image_path)
+            else:
+                out = await machinist.generate(part_ctx)
+            return out.delta_patch.add_operations if out.delta_patch else []
+
+    try:
+        start = time.monotonic()
+        results = await asyncio.gather(
+            *[_run_part(i, p) for i, p in enumerate(parts)],
+            return_exceptions=True,
+        )
+        elapsed = time.monotonic() - start
+
+        aggregated: list[Any] = []
+        failures = 0
+        for i, res in enumerate(results):
+            if isinstance(res, BaseException):
+                part_id = getattr(parts[i], "id", "?")
+                print(f"  [A2] ⚠️ Parallel part {part_id} failed: {res}")
+                failures += 1
+            else:
+                aggregated.extend(res)
+
+        if failures == len(parts):
+            print(f"  [A2] ⚠️ All parallel calls failed, falling back")
+            return None
+
+        print(f"  [A2] ⚡ Parallel completed: {len(aggregated)} ops from {len(parts)} parts in {elapsed:.1f}s ({failures} failures)")
+        return aggregated
+    except Exception as e:
+        print(f"  [A2] ⚠️ Parallel gather failed: {e}")
+        return None
+
+
+# Batch API: max wait then fall back (Batch target turnaround is up to 24h)
+_MACHINIST_BATCH_POLL_INTERVAL_INITIAL_SEC = 5   # Start polling at 5s
+_MACHINIST_BATCH_POLL_INTERVAL_MAX_SEC = 15       # Cap at 15s
 _MACHINIST_BATCH_MAX_WAIT_SEC = 1800  # 30 minutes total
-_MACHINIST_BATCH_PENDING_MAX_SEC = 300  # 5 minutes in PENDING → fall back to sequential
+_MACHINIST_BATCH_PENDING_MAX_SEC = 300  # 5 minutes in PENDING → fall back
 
 
 async def _run_machinist_batch(
@@ -382,7 +562,7 @@ async def _run_machinist_batch(
             user_prompt=state.user_prompt,
             rag_context=state.rag_context,
             previous_outputs={
-                "a1": state.stage_outputs["a1"],
+                "a1": _strip_dna_for_context(state.stage_outputs["a1"]),
                 "a1_part": {"part_id": part_id, "part": part.model_dump()},
             },
             style_token=state.style_token,
@@ -415,9 +595,10 @@ async def _run_machinist_batch(
             config={"display_name": "machinist-parts"},
         )
         job_name = job.name
-        print(f"  [A2] 📦 Batch job created: {job_name} (polling every {_MACHINIST_BATCH_POLL_INTERVAL_SEC}s, max {_MACHINIST_BATCH_MAX_WAIT_SEC}s)...")
+        print(f"  [A2] 📦 Batch job created: {job_name} (adaptive poll {_MACHINIST_BATCH_POLL_INTERVAL_INITIAL_SEC}-{_MACHINIST_BATCH_POLL_INTERVAL_MAX_SEC}s, max {_MACHINIST_BATCH_MAX_WAIT_SEC}s)...")
         deadline = time.monotonic() + _MACHINIST_BATCH_MAX_WAIT_SEC
         poll_count = 0
+        poll_interval = _MACHINIST_BATCH_POLL_INTERVAL_INITIAL_SEC
         start = time.monotonic()
         pending_since: float | None = None
         while time.monotonic() < deadline:
@@ -428,14 +609,14 @@ async def _run_machinist_batch(
                 if pending_since is None:
                     pending_since = time.monotonic()
                 elif time.monotonic() - pending_since >= _MACHINIST_BATCH_PENDING_MAX_SEC:
-                    print(f"  [A2] ⚠️ Batch still PENDING after 5 minutes, falling back to sequential")
+                    print(f"  [A2] ⚠️ Batch still PENDING after 5 minutes, falling back")
                     return None
             else:
                 pending_since = None
-            # Progress every 2 polls (~30s) so the user sees activity
+            # Progress every 2 polls so the user sees activity
             if poll_count % 2 == 0:
                 elapsed = int(time.monotonic() - start)
-                print(f"  [A2] ⏳ Batch job still running ({state_name}, {elapsed}s elapsed)...")
+                print(f"  [A2] ⏳ Batch job still running ({state_name}, {elapsed}s elapsed, poll {poll_interval}s)...")
             if state_name == "JOB_STATE_SUCCEEDED":
                 aggregated: list[Any] = []
                 total_input_tokens = 0
@@ -475,8 +656,10 @@ async def _run_machinist_batch(
                 err = getattr(batch_job, "error", None)
                 print(f"  [A2] ⚠️ Batch job {state_name}: {err}")
                 return None
-            await asyncio.sleep(_MACHINIST_BATCH_POLL_INTERVAL_SEC)
-        print("  [A2] ⚠️ Batch job timed out, falling back to sequential")
+            await asyncio.sleep(poll_interval)
+            # Exponential backoff: 5 → 10 → 15 → 15 → ...
+            poll_interval = min(poll_interval * 2, _MACHINIST_BATCH_POLL_INTERVAL_MAX_SEC)
+        print("  [A2] ⚠️ Batch job timed out, falling back")
         return None
     except Exception as e:
         print(f"  [A2] ⚠️ Batch create failed: {e}")
@@ -508,6 +691,33 @@ def _count_nodes(sdf_tree: SDFRootNode) -> int:
     return count
 
 
+def _limit_patches_per_node(patches: list[Any]) -> list[Any]:
+    """
+    Cap patches per target_node_id: up to 2 subtract + 3 add per node.
+    Keeps first N of each type per target (preserves LLM ordering).
+    """
+    if not patches:
+        return []
+    sub_counts: dict[str, int] = {}
+    add_counts: dict[str, int] = {}
+    limited: list[Any] = []
+    for p in patches:
+        target_id = getattr(p, "target_node_id", None) or (p.get("target_node_id", "") if isinstance(p, dict) else "")
+        op = (getattr(p, "op", None) or (p.get("op", "subtract") if isinstance(p, dict) else "subtract")).lower()
+        is_add = op == "add"
+        if is_add:
+            n = add_counts.get(target_id, 0)
+            if n < MAX_ADD_PER_NODE:
+                limited.append(p)
+                add_counts[target_id] = n + 1
+        else:
+            n = sub_counts.get(target_id, 0)
+            if n < MAX_SUBTRACT_PER_NODE:
+                limited.append(p)
+                sub_counts[target_id] = n + 1
+    return limited
+
+
 def _count_patches(a2_output: MachinistOutput) -> int:
     """Count machining patches from Machinist output."""
     if not a2_output.delta_patch:
@@ -528,7 +738,7 @@ def _count_materials(a3_output: ArtistOutput) -> int:
     return 0
 
 
-def _build_material_prep(a1_output: BlacksmithOutput) -> dict[str, dict[str, Any]]:
+def _build_material_prep(a1_output: BlacksmithOutputLegacy) -> dict[str, dict[str, Any]]:
     """Create deterministic material hints from node IDs."""
     hints: dict[str, dict[str, Any]] = {}
     
@@ -624,7 +834,7 @@ def _merge_material_configs(
 
 
 def _merge_pipeline_outputs(
-    a1: BlacksmithOutput,
+    a1: BlacksmithOutputLegacy,
     a2: MachinistOutput,
     a3: ArtistOutput,
 ) -> dict[str, Any]:
@@ -642,6 +852,16 @@ def _merge_pipeline_outputs(
         "root_node": root_node,
         "metadata": a1.metadata if isinstance(a1.metadata, dict) else {},
     }
+    
+    # Add skeleton if present (animated_character, animated_weapon)
+    if a1.skeleton is not None:
+        dna["skeleton"] = a1.skeleton.model_dump()
+
+    # Add connections if present (assembly coherence metadata)
+    if a1.connections:
+        dna["connections"] = [
+            c.model_dump() if hasattr(c, "model_dump") else c for c in a1.connections
+        ]
     
     # Apply A2 delta patches - delta_patch is now MachinistDeltaPatchList
     patches = a2.delta_patch.add_operations if a2.delta_patch else []

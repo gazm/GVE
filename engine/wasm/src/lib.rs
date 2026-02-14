@@ -148,6 +148,11 @@ pub fn set_view_mode(mode: u32, asset_id: u64) {
     });
 }
 
+#[wasm_bindgen]
+pub fn set_show_skeleton(visible: bool) {
+    with_engine_mut(|engine| engine.renderer.set_show_skeleton(visible));
+}
+
 /// Get available view modes for an asset as a packed bitmask byte.
 /// Bit layout: bit0=mesh, bit1=sdf (volume||bytecode), bit2=splat, bit3=volume
 /// Returns a single u8 (0 if engine not ready).
@@ -180,10 +185,42 @@ pub fn snap_camera_to(pos_x: f32, pos_y: f32, pos_z: f32, yaw: f32, pitch: f32) 
     with_engine_mut(|engine| engine.snap_camera_to([pos_x, pos_y, pos_z], yaw, pitch));
 }
 
-/// Toggle Axes visualization
+/// Set selected node position (shows gizmo at that point)
 #[wasm_bindgen]
-pub fn toggle_axes() {
-    with_engine_mut(|engine| engine.renderer.toggle_axes());
+pub fn set_selected_node_pos(x: f32, y: f32, z: f32) {
+    with_engine_mut(|engine| engine.set_selected_node_pos(x, y, z));
+}
+
+/// Clear node selection (hides gizmo)
+#[wasm_bindgen]
+pub fn clear_node_selection() {
+    with_engine_mut(|engine| engine.clear_node_selection());
+}
+
+/// Pick gizmo part under mouse. Returns 0=none, 1=X, 2=Y, 3=Z, 4=center.
+#[wasm_bindgen]
+pub fn pick_gizmo(mouse_x: f32, mouse_y: f32) -> u32 {
+    with_engine(|engine| engine.pick_gizmo(mouse_x, mouse_y)).unwrap_or(0)
+}
+
+/// Drag gizmo. axis: 0=free, 1=X, 2=Y, 3=Z.
+#[wasm_bindgen]
+pub fn drag_gizmo(
+    mouse_x: f32,
+    mouse_y: f32,
+    prev_mouse_x: f32,
+    prev_mouse_y: f32,
+    axis: u32,
+) {
+    with_engine_mut(|engine| {
+        engine.drag_gizmo(mouse_x, mouse_y, prev_mouse_x, prev_mouse_y, axis);
+    });
+}
+
+/// Get current selected node position [x, y, z]
+#[wasm_bindgen]
+pub fn get_selected_node_pos() -> Vec<f32> {
+    with_engine(|engine| engine.get_selected_node_pos()).unwrap_or_default()
 }
 
 /// Return current scene as binary: u32 count, then per entry asset_id (u64), type (u8: 0=mesh, 1=sdf), active (u8: 0/1).
@@ -198,8 +235,9 @@ pub fn get_debug_info() -> String {
     with_engine(|engine| {
         let state = engine.renderer.get_debug_state();
         format!(
-            r#"{{"view_mode": "{}", "active_assets": {{ "splat": {}, "volume": {} }}, "camera": {{ "pos": [{:.2}, {:.2}, {:.2}], "yaw": {:.2}, "pitch": {:.2} }} }}"#,
+            r#"{{"view_mode": "{}", "show_skeleton": {}, "active_assets": {{ "splat": {}, "volume": {} }}, "camera": {{ "pos": [{:.2}, {:.2}, {:.2}], "yaw": {:.2}, "pitch": {:.2} }} }}"#,
             state.view_mode,
+            state.show_skeleton,
             state.active_splat.map(|id| id.to_string()).unwrap_or("null".to_string()),
             state.active_volume.map(|id| id.to_string()).unwrap_or("null".to_string()),
             state.camera_pos[0], state.camera_pos[1], state.camera_pos[2],

@@ -85,6 +85,27 @@ pub struct LoadedSplat {
     pub instance_count: u32,
 }
 
+/// Parsed bone from SKEL chunk (rest pose only; animation sampled later)
+#[derive(Clone, Debug)]
+pub struct BoneRestPose {
+    pub parent_idx: u16,
+    pub rest_pos: [f32; 3],
+    pub rest_rot: [f32; 4],
+}
+
+/// Parsed skeleton from SKEL chunk
+#[derive(Clone, Debug, Default)]
+pub struct SkeletonData {
+    pub bones: Vec<BoneRestPose>,
+}
+
+/// Node-to-bone binding: node_id (FNV hash) -> bone_idx
+#[derive(Clone, Debug)]
+pub enum NodeBinding {
+    Rigid { node_id: u32, bone_idx: u16 },
+    Skinned { node_id: u32, bone_indices: Vec<u16>, weights: Vec<f32> },
+}
+
 /// Loaded dense volume for raymarching (optionally with triplanar textures for color)
 pub struct LoadedVolume {
     pub texture: wgpu::Texture,
@@ -99,14 +120,22 @@ pub struct LoadedVolume {
     pub triplanar_bounds_min: [f32; 3],
     pub triplanar_bounds_max: [f32; 3],
     pub patches: Vec<RuntimeVolumeOp>,
+    /// Parsed from SKEL chunk when present
+    pub skeleton: Option<SkeletonData>,
+    pub node_bindings: Vec<NodeBinding>,
 }
 
-/// Runtime volume operation (matches shared::RuntimeVolumeOp)
+/// Sentinel for "no bone" binding
+pub const BONE_IDX_NONE: u16 = 0xFFFF;
+
+/// Runtime volume operation (matches ROPS/SKEL binary format)
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct RuntimeVolumeOp {
     pub op_type: u32,
-    pub _pad0: [u32; 3],
+    pub bone_idx: u16,
+    pub _pad0: [u16; 1],
+    pub _pad0_rest: [u32; 2],
     pub pos: [f32; 3],
     pub _pad1: u32,
     pub params: [f32; 8],
@@ -138,7 +167,6 @@ pub struct VolumeUniforms {
 }
 
 /// WGSL expects uniform block size rounded to 16 bytes.
-/// Old size was 1504. New size is 224 + 1536 = 1760.
 pub const VOLUME_UNIFORM_BUFFER_SIZE: u64 = 1760;
 
 // ============================================================================
@@ -184,8 +212,7 @@ impl ViewMode {
 #[derive(Debug, Clone)]
 pub struct DebugState {
     pub view_mode: String,
-    // pub active_sdf: Option<u64>, // Removed
-
+    pub show_skeleton: bool,
     pub active_splat: Option<u64>,
     pub active_volume: Option<u64>,
     pub camera_pos: [f32; 3],

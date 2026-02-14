@@ -7,6 +7,9 @@
 import init, * as gve_wasm from '../wasm/pkg/gve_wasm.js';
 import { CameraController } from './viewport-camera.js';
 
+// Expose for property editor node selection (gizmo placement)
+window.gve_wasm = gve_wasm;
+
 const wasmGetSceneSnapshot = gve_wasm.get_scene_snapshot || (() => new Uint8Array(0));
 
 const MSG_TYPE_LOAD_CHUNK = 0x30;
@@ -36,10 +39,10 @@ export async function ensureWasmLoaded() {
     wasmModuleLoaded = true;
 }
 
-// Expose debug functions to window for console access
-window.toggle_axes = () => {
+// Expose node selection to window (axes gizmo replaced by node translate gizmo)
+window.clear_node_selection = () => {
     if (!wasmEngineInitialized) { console.warn("WASM not ready"); return; }
-    gve_wasm.toggle_axes();
+    gve_wasm.clear_node_selection();
 };
 
 // Debug functions removed (v2.3)
@@ -48,6 +51,13 @@ window.toggle_axes = () => {
  * Set the rendering view mode for the current asset.
  * @param {string|number} mode - 'shell'|'sdf'|'splat'|'textured'|'overlay' OR 0|1|2|3|4
  */
+window.set_show_skeleton = (visible) => {
+    if (!wasmEngineInitialized) return;
+    if (typeof gve_wasm.set_show_skeleton === 'function') {
+        gve_wasm.set_show_skeleton(!!visible);
+    }
+};
+
 window.set_view_mode = (mode) => {
     if (!wasmEngineInitialized) return;
 
@@ -616,6 +626,11 @@ function pollDebugInfo() {
     if (!overlay) {
         overlay = document.createElement('div');
         overlay.id = 'debug-overlay';
+        overlay.addEventListener('change', (e) => {
+            if (e.target.id === 'show-skeleton-cb' && window.set_show_skeleton) {
+                window.set_show_skeleton(e.target.checked);
+            }
+        });
 
         // Attach to parent of canvas (viewport container)
         if (canvas.parentElement) {
@@ -653,6 +668,10 @@ function pollDebugInfo() {
                 (${frameTime.toFixed(1)}ms)
             </div>
             <div>Mode: ${info.view_mode}</div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;pointer-events:auto">
+                <input type="checkbox" id="show-skeleton-cb" ${info.show_skeleton ? 'checked' : ''}>
+                <span>Show Bones</span>
+            </label>
             <div>Splat: ${fmtId(info.active_assets?.splat)}</div>
             <div>Vol: ${fmtId(info.active_assets?.volume)}</div>
             <div>Cam: ${info.camera?.pos ? info.camera.pos.map(v => Number(v).toFixed(1)).join(',') : '-'}</div>

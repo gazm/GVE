@@ -33,11 +33,52 @@ CHUNK_SPLT = b"SPLT"  # Gaussian splat data
 CHUNK_TRIP = b"TRIP"  # Triplanar textures
 CHUNK_ROPS = b"ROPS"  # Runtime operations (baked patches)
 CHUNK_META = b"META"  # Metadata
+CHUNK_SKEL = b"SKEL"  # Skeleton (bones + node bindings)
 
 
 def _pad_to_16(size: int) -> int:
     """Calculate padding bytes needed for 16-byte alignment."""
     return (16 - (size % 16)) % 16
+
+
+def serialize_skel_chunk(bones: list[dict], bindings: list[dict]) -> bytes:
+    """
+    Serialize bones + bindings to SKEL chunk bytes.
+    Layout: bone_count(u16) | bones[] | mapping_count(u32) | mappings[]
+    Bone: parent_idx(u16) rest_pos(3×f32) rest_rot(4×f32) = 30 bytes
+    Rigid: kind=0(u8) node_id(u32) bone_idx(u16) pad(u8) = 8 bytes
+    Skinned: kind=1(u8) node_id(u32) bone_count(u8) pad(2) bones[u16×n] weights[f32×n]
+    """
+    buf = io.BytesIO()
+    # bone_count
+    buf.write(struct.pack("<H", min(len(bones), 65535)))
+    for b in bones[:65535]:
+        parent_idx = b.get("parent_idx", 0xFFFF)
+        if parent_idx >= 65535:
+            parent_idx = 0xFFFF
+        rest_pos = b.get("rest_pos", [0, 0, 0])
+        rest_rot = b.get("rest_rot", [0, 0, 0, 1])
+        buf.write(struct.pack("<H", parent_idx))
+        buf.write(struct.pack("<3f", *rest_pos))
+        buf.write(struct.pack("<4f", *rest_rot))
+    buf.write(struct.pack("<I", len(bindings)))
+    for m in bindings:
+        node_id = m.get("node_id", 0)
+        kind = m.get("kind", "rigid")
+        if kind == "rigid":
+            buf.write(struct.pack("<BIH", 0, node_id, m.get("bone_idx", 0)))
+            buf.write(struct.pack("<B", 0))  # pad to 8
+        else:
+            bones_b = m.get("bones", [])
+            weights = m.get("weights", [])
+            n = min(len(bones_b), len(weights), 8)  # max 8 influences
+            buf.write(struct.pack("<BIBB", 1, node_id, n, 0))
+            buf.write(struct.pack("<BB", 0, 0))  # pad
+            for i in range(n):
+                buf.write(struct.pack("<H", bones_b[i]))
+            for i in range(n):
+                buf.write(struct.pack("<f", weights[i]))
+    return buf.getvalue()
 
 
 def _write_chunk(f, fourcc: bytes, data: bytes):
@@ -64,6 +105,7 @@ class GVEBinaryWriter:
         self.splat_data = b""
         self.triplanar_data = b""
         self.runtime_ops_data = b""
+        self.skeleton_data = b""
         self.vertex_count = 0
         self.index_count = 0
         self.splat_count = 0
@@ -90,6 +132,10 @@ class GVEBinaryWriter:
         """Set triplanar texture data."""
         self.triplanar_data = data
 
+    def set_skeleton_data(self, data: bytes):
+        """Set skeleton chunk data (bones + node bindings)."""
+        self.skeleton_data = data
+
     def _collect_chunks(self) -> List[Tuple[bytes, bytes]]:
         """Collect all non-empty data as (fourcc, data) pairs."""
         chunks = []
@@ -113,7 +159,10 @@ class GVEBinaryWriter:
         
         if self.runtime_ops_data:
             chunks.append((CHUNK_ROPS, self.runtime_ops_data))
-        
+
+        if self.skeleton_data:
+            chunks.append((CHUNK_SKEL, self.skeleton_data))
+
         return chunks
 
     def write(self):
@@ -162,6 +211,7 @@ def _prepare_writer(
     splat_data: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
     runtime_ops_data: Optional[bytes] = None,
+    skeleton_data: Optional[bytes] = None,
 ) -> GVEBinaryWriter:
     """
     Prepare a GVEBinaryWriter with the given data.
@@ -209,24 +259,29 @@ def _prepare_writer(
         writer.set_triplanar_data(triplanar_data)
 
     if runtime_ops_data:
-        # Direct set as raw bytes
         writer.runtime_ops_data = runtime_ops_data
-    
+
+    if skeleton_data:
+        writer.set_skeleton_data(skeleton_data)
+
     return writer
 
 
 def write_gve_bin(
-    path: Path, 
+    path: Path,
     volume_data: Optional[bytes] = None,
     shell_data: Optional[bytes] = None,
     splat_data: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
     runtime_ops_data: Optional[bytes] = None,
+    skeleton_data: Optional[bytes] = None,
 ) -> Path:
     """
     Write a .gve_bin file from compiled data.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data)
+    writer = _prepare_writer(
+        volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data, skeleton_data
+    )
     writer.path = path
     writer.write()
     return path
@@ -238,11 +293,14 @@ def write_gve_bin_bytes(
     splat_data: Optional[bytes] = None,
     triplanar_data: Optional[bytes] = None,
     runtime_ops_data: Optional[bytes] = None,
+    skeleton_data: Optional[bytes] = None,
 ) -> bytes:
     """
     Build .gve_bin data and return as bytes (no disk write).
     
     Used for stage previews during AI generation pipeline.
     """
-    writer = _prepare_writer(volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data)
+    writer = _prepare_writer(
+        volume_data, shell_data, splat_data, triplanar_data, runtime_ops_data, skeleton_data
+    )
     return writer.to_bytes()

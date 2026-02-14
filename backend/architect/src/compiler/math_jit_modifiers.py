@@ -301,6 +301,40 @@ class RoundModifier(ModifierNode):
         return (b_min - r, b_max + r)
 
 
+class ChamferModifier(ModifierNode):
+    """Chamfer edges with a flat 45-degree bevel (linear offset method).
+
+    Unlike round (constant SDF offset producing curved edges), chamfer applies
+    a distance-dependent offset that linearly tapers from full at the surface
+    to zero at ``width``, creating a flat bevel — same as a 45-degree chamfer
+    cut on a milling machine.
+    """
+
+    def __init__(self, child: GeometryNode, width: float = 0.02):
+        super().__init__(child)
+        self.width = width
+
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        res = self.child(x)
+        if isinstance(res, tuple):
+            dist, attrs = res
+        else:
+            dist, attrs = res, None
+
+        # Linear offset: full at surface (d=0), zero at d=width
+        t = torch.clamp(dist / self.width, 0.0, 1.0)
+        dist = dist - self.width * (1.0 - t)
+
+        if attrs is not None:
+            return dist, attrs
+        return dist
+
+    def compute_bounds(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        b_min, b_max = self.child.compute_bounds()
+        w = self.width
+        return (b_min - w, b_max + w)
+
+
 # =============================================================================
 # Complex/Procedural Modifiers (Voronoi, etc)
 # =============================================================================
@@ -354,39 +388,85 @@ class VoronoiModifier(ModifierNode):
         return result_dist
 
 
+def _get_child_min_half_extent(child: GeometryNode) -> float:
+    """Get the smallest half-extent of a child node for proportional clamping."""
+    if hasattr(child, "compute_bounds"):
+        try:
+            b_min, b_max = child.compute_bounds()
+            extents = (b_max - b_min) / 2.0
+            positive = extents[extents > 1e-6]
+            if len(positive) > 0:
+                return positive.min().item()
+        except Exception:
+            pass
+    return 0.05  # Conservative fallback
+
+
 def build_modifier(child: GeometryNode, modifier_data: Dict) -> GeometryNode:
-    """Build a modifier node from JSON data."""
+    """Build a modifier node from JSON data with defensive parameter clamping."""
     mod_type = modifier_data.get("type", "").lower()
     
     if mod_type == "twist":
+        rate = float(modifier_data.get("rate", 1.0))
+        rate = max(-10.0, min(10.0, rate))
         return TwistModifier(
             child,
             axis=modifier_data.get("axis", "y"),
-            rate=float(modifier_data.get("rate", 1.0))
+            rate=rate,
         )
     elif mod_type == "bend":
+        angle = float(modifier_data.get("angle", 0.5))
+        angle = max(-3.0, min(3.0, angle))
         return BendModifier(
             child,
             axis=modifier_data.get("axis", "x"),
-            angle=float(modifier_data.get("angle", 0.5))
+            angle=angle,
         )
     elif mod_type == "taper":
+        scale_min = float(modifier_data.get("scale_min", 0.5))
+        scale_max = float(modifier_data.get("scale_max", 1.0))
+        scale_min_clamped = max(0.3, min(2.0, scale_min))
+        scale_max_clamped = max(0.3, min(2.0, scale_max))
+        if scale_min_clamped != scale_min or scale_max_clamped != scale_max:
+            print(f"      [modifier] Clamped taper scale: [{scale_min},{scale_max}] -> [{scale_min_clamped},{scale_max_clamped}]", flush=True)
+        # Skip taper if child bounds are degenerate
+        if hasattr(child, "compute_bounds"):
+            try:
+                b_min, b_max = child.compute_bounds()
+                axis_idx = AXIS_INDEX.get(str(modifier_data.get("axis", "y")).lower(), 1)
+                extent = (b_max[axis_idx] - b_min[axis_idx]).item()
+                if extent < 0.001:
+                    print(f"      [modifier] Skipping taper: degenerate axis extent ({extent:.4f})", flush=True)
+                    return child
+            except Exception:
+                pass
         return TaperModifier(
             child,
             axis=modifier_data.get("axis", "y"),
-            scale_min=float(modifier_data.get("scale_min", 0.5)),
-            scale_max=float(modifier_data.get("scale_max", 1.0))
+            scale_min=scale_min_clamped,
+            scale_max=scale_max_clamped,
         )
     elif mod_type == "mirror":
         return MirrorModifier(
             child,
-            axis=modifier_data.get("axis", "x")
+            axis=modifier_data.get("axis", "x"),
         )
     elif mod_type == "round":
-        return RoundModifier(
-            child,
-            radius=float(modifier_data.get("radius", 0.02))
-        )
+        radius = float(modifier_data.get("radius", 0.02))
+        max_radius = _get_child_min_half_extent(child) * 0.4
+        if radius > max_radius and max_radius > 0.001:
+            print(f"      [modifier] Clamped round radius: {radius:.4f} -> {max_radius:.4f} (40% of min half-extent)", flush=True)
+            radius = max_radius
+        radius = max(0.0005, radius)  # Floor to avoid invisible rounding
+        return RoundModifier(child, radius=radius)
+    elif mod_type == "chamfer":
+        width = float(modifier_data.get("width", 0.02))
+        max_width = _get_child_min_half_extent(child) * 0.4
+        if width > max_width and max_width > 0.001:
+            print(f"      [modifier] Clamped chamfer width: {width:.4f} -> {max_width:.4f} (40% of min half-extent)", flush=True)
+            width = max_width
+        width = max(0.0005, width)  # Floor to avoid invisible chamfer
+        return ChamferModifier(child, width=width)
     elif mod_type == "voronoi":
         return VoronoiModifier(
             child,

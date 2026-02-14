@@ -16,7 +16,6 @@ impl Renderer {
         let (view_proj, eye) = calculate_manual_camera(aspect, self.camera_pos, self.camera_yaw, self.camera_pitch);
         let inv_view_proj = view_proj.inverse();
 
-        // Update volume uniforms with bounds and triplanar flag from loaded volume
         let mut uniforms = VolumeUniforms {
             inv_view_proj: inv_view_proj.to_cols_array_2d(),
             camera_pos: eye.to_array(),
@@ -33,8 +32,17 @@ impl Renderer {
             triplanar_bounds_max: volume.triplanar_bounds_max,
             _pad4: 0.0,
             ops: [crate::renderer::types::RuntimeVolumeOp {
-                op_type: 0, _pad0: [0;3], pos: [0.0;3], _pad1: 0, 
-                params: [0.0; 8], aabb_min: [0.0;3], _pad2: 0, aabb_max: [0.0;3], _pad3: 0 
+                op_type: 0,
+                bone_idx: crate::renderer::types::BONE_IDX_NONE,
+                _pad0: [0],
+                _pad0_rest: [0; 2],
+                pos: [0.0; 3],
+                _pad1: 0,
+                params: [0.0; 8],
+                aabb_min: [0.0; 3],
+                _pad2: 0,
+                aabb_max: [0.0; 3],
+                _pad3: 0,
             }; 16],
         };
 
@@ -140,13 +148,38 @@ impl Renderer {
         }
     }
 
-    /// Helper to render gizmos (Axes + ViewCube)
+    /// Helper to render gizmos (Axes + ViewCube + optional skeleton)
     pub(crate) fn render_gizmos(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, aspect: f32) {
-        // Render View Cube (always on top)
-        let (view_proj, _) = calculate_manual_camera(aspect, self.camera_pos, self.camera_yaw, self.camera_pitch);
-        
-        // Render Axes Gizmo (using main camera view_proj)
-        self.axes_gizmo.render(&self.queue, encoder, view, view_proj);
+        let (view_proj, eye) = calculate_manual_camera(aspect, self.camera_pos, self.camera_yaw, self.camera_pitch);
+
+        // Render Node Translate Gizmo (only when a node is selected)
+        self.node_gizmo.render(
+            &self.queue,
+            encoder,
+            view,
+            view_proj,
+            eye.to_array(),
+            self.width,
+            self.height,
+        );
+
+        // Render skeleton overlay when enabled and active volume has SKEL
+        if self.show_skeleton {
+            if let Some(vol_id) = self.active_volume {
+                if let Some(volume) = self.loaded_volumes.get(&vol_id) {
+                    if let Some(ref skeleton) = volume.skeleton {
+                        self.bone_gizmo.render(
+                            &self.queue,
+                            encoder,
+                            view,
+                            view_proj,
+                            eye.to_array(),
+                            skeleton,
+                        );
+                    }
+                }
+            }
+        }
         
         // Pure rotation view matrix (eye at origin)
         let eye = glam::Vec3::ZERO;

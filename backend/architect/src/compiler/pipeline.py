@@ -22,7 +22,8 @@ except ImportError:
 from .queue import CompilePriority
 from .bakeries.base import CompilerContext, CompilerOptions
 from .bakeries import VolumeBaker, MeshBaker, SplatBaker, TriplanarBaker
-from .binary_writer import write_gve_bin, write_gve_bin_bytes
+from .binary_writer import write_gve_bin, write_gve_bin_bytes, serialize_skel_chunk
+from .skeleton_extractor import has_skeleton_or_bindings, build_skeleton_and_bindings
 
 
 @dataclass
@@ -123,11 +124,16 @@ async def draft_compile_dna(
         
         # 4. Write to bytes
         print(f"  [draft-compile] 3. Building binary...", flush=True)
+        skeleton_data = None
+        if has_skeleton_or_bindings(dna):
+            bones, bindings = build_skeleton_and_bindings(dna)
+            skeleton_data = serialize_skel_chunk(bones, bindings)
         binary_data = write_gve_bin_bytes(
             volume_data=volume_result.get("volume_data"),
             shell_data=mesh_result.get("shell_mesh"),
-            splat_data=None, # No splats in draft
-            triplanar_data=None # No textures in draft
+            splat_data=None,
+            triplanar_data=None,
+            skeleton_data=skeleton_data,
         )
         
         elapsed = time.time() - start
@@ -213,7 +219,12 @@ async def compile_asset(request: CompileRequest) -> CompileResult:
         # 4. Write Binary
         print(f"  [compile] 💾 Writing binary to {output_path}...", flush=True)
         await asyncio.to_thread(output_path.parent.mkdir, parents=True, exist_ok=True)
-        
+
+        skeleton_data = None
+        if has_skeleton_or_bindings(dna):
+            bones, bindings = build_skeleton_and_bindings(dna)
+            skeleton_data = serialize_skel_chunk(bones, bindings)
+
         await asyncio.to_thread(
             write_gve_bin,
             output_path,
@@ -221,6 +232,7 @@ async def compile_asset(request: CompileRequest) -> CompileResult:
             shell_data=artifacts.get("shell_mesh"),
             splat_data=artifacts.get("splat_data"),
             triplanar_data=artifacts.get("triplanar_data"),
+            skeleton_data=skeleton_data,
         )
         
         elapsed = time.time() - start

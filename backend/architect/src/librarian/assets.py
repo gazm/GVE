@@ -303,6 +303,11 @@ class AssetLibrarian:
         """
         await self._ensure_db()
         doc = await self.db.assets.find_one({"_id": asset_id})
+        if not doc and len(asset_id) == 24 and all(c in "0123456789abcdef" for c in asset_id.lower()):
+            try:
+                doc = await self.db.assets.find_one({"_id": ObjectId(asset_id)})
+            except Exception:
+                pass
         if not doc:
             return None
         
@@ -439,6 +444,43 @@ class AssetLibrarian:
         
         return results
 
+    async def list_recent_approved_concepts(self, limit: int = 12) -> List[dict]:
+        """
+        List recent approved concept images for frontend selection.
+
+        Returns concepts newest-first with only UI-safe fields.
+        """
+        await self._ensure_db()
+        cursor = (
+            self.db.concepts
+            .find(
+                {
+                    "approved": True,
+                    "concept_image": {"$exists": True, "$ne": None},
+                },
+                {
+                    "asset_id": 1,
+                    "prompt": 1,
+                    "concept_image": 1,
+                    "created_at": 1,
+                },
+            )
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+        results: List[dict] = []
+        async for doc in cursor:
+            created_at = doc.get("created_at")
+            results.append(
+                {
+                    "asset_id": str(doc.get("asset_id", "")),
+                    "prompt": doc.get("prompt", ""),
+                    "concept_image": doc.get("concept_image", ""),
+                    "created_at": created_at.isoformat() if created_at else None,
+                }
+            )
+        return results
+
     async def close_connections(self) -> None:
         """Close database connections. Call on application shutdown."""
         if self.client:
@@ -466,3 +508,4 @@ update_asset_field = _librarian.update_asset_field
 # Concept RAG wrappers
 store_concept_rag = _librarian.store_concept_rag
 search_concepts = _librarian.search_concepts
+list_recent_approved_concepts = _librarian.list_recent_approved_concepts

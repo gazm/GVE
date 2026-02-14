@@ -63,6 +63,24 @@ async def get_asset_binary(asset_id: str):
         }
     )
 
+@router.get("/{asset_id}/dna/nodes")
+async def get_dna_nodes(asset_id: str):
+    """Return node id, path, center, bmin, bmax for every DNA node with an id.
+    Used by viewport gizmo placement and property editor node selection."""
+    doc = await load_asset_doc(asset_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    dna = doc.get("dna")
+    if not dna:
+        return {"nodes": []}
+    try:
+        from src.compiler.math_jit_builder import collect_node_info
+        nodes = collect_node_info(dna)
+        return {"nodes": nodes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute node bounds: {e}") from e
+
+
 @router.get("/{asset_id}", response_model=AssetMetadata)
 async def get_asset(asset_id: str):
     asset = await load_asset(asset_id)
@@ -384,23 +402,17 @@ async def update_property(card_id: str, request: Request):
 @router.post("/partials/update_dna/{card_id}")
 async def update_asset_dna(card_id: str, dna: dict = Body(...)):
     """
-    Update the DNA of an asset directly from the Tree Editor.
+    Persist DNA to asset document. Does NOT trigger compile.
+    User must click Recompile separately to bake changes into the binary.
     """
     doc = await load_asset_doc(card_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    print(f"🧬 Updating DNA for {card_id}, keys: {list(dna.keys())}")
-    
-    # Update DNA field
-    # TODO: Validate DNA against schema here if possible
+    print(f"🧬 Saving DNA for {card_id} (no auto-compile)")
     await update_asset_field(card_id, {"dna": dna})
-    
-    # Trigger Compile
-    # Future work: Return 'hotload' patch if supported
-    job_id = await enqueue_compile(card_id, priority=CompilePriority.HIGH, force_recompile=True)
-    
-    return {"status": "ok", "job_id": job_id}
+
+    return {"status": "ok"}
 
 @router.post("/partials/recompile/{asset_id}", response_class=HTMLResponse)
 async def recompile_asset(asset_id: str, request: Request):

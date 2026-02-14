@@ -166,16 +166,24 @@ function initEditors() {
 
     // Initialize Accordions
     document.querySelectorAll('.accordion-header').forEach(header => {
+        if (header.dataset.accordionBound === '1') return;
+        header.dataset.accordionBound = '1';
         header.addEventListener('click', () => {
-            // Collapse all others
             const container = header.closest('.accordion-container');
+            if (!container) return;
+
+            const parentItem = header.parentElement;
+            if (!parentItem) return;
+
+            const willOpen = !parentItem.classList.contains('active');
+            // Collapse all others
             container.querySelectorAll('.accordion-item').forEach(item => {
-                if (item !== header.parentElement) {
+                if (item !== parentItem) {
                     item.classList.remove('active');
                 }
             });
-            // Toggle clicked
-            header.parentElement.classList.toggle('active');
+            // Toggle clicked (supports all-collapsed state)
+            parentItem.classList.toggle('active', willOpen);
         });
     });
 
@@ -347,8 +355,53 @@ window.collectDNA = function (rootElement) {
 // Better Approach: Mutate data in place.
 // Let's redefine createNodes to accept a 'context' function or bind inputs to the data object.
 
+function getNodeAtPath(obj, path) {
+    let cur = obj;
+    for (const p of path.split('.')) {
+        if (cur == null) return null;
+        const idx = parseInt(p, 10);
+        cur = isNaN(idx) ? cur[p] : cur[idx];
+    }
+    return cur;
+}
+
 function renderDNATreeInteractive(data, container, onChange) {
     container.innerHTML = '';
+    const rootEl = container.closest('[id^="dna-editor-"]') || container.parentElement;
+    const cardId = rootEl?.id?.replace('dna-editor-', '') || '';
+    let selectedNodePath = null;
+
+    function selectNode(nodeId, nodeInfo) {
+        const center = nodeInfo?.center;
+        const path = nodeInfo?.path ?? null;
+        selectedNodePath = path;
+        document.querySelectorAll('.node-header.selectable').forEach(h => h.classList.remove('selected'));
+        const header = container.querySelector(`[data-node-id="${nodeId}"]`);
+        if (header) header.classList.add('selected');
+        if (window.gve_wasm?.set_selected_node_pos && center) {
+            window.gve_wasm.set_selected_node_pos(center[0], center[1], center[2]);
+        }
+        const xyzSection = container.querySelector('.node-xyz-section');
+        if (xyzSection) {
+            xyzSection.style.display = header ? 'block' : 'none';
+            const [xIn, yIn, zIn] = xyzSection.querySelectorAll('input[data-xyz]');
+            if (center && xIn) {
+                xIn.value = center[0].toFixed(4);
+                yIn.value = center[1].toFixed(4);
+                zIn.value = center[2].toFixed(4);
+            }
+        }
+    }
+
+    /** Update in-memory node position only. No save, no compile, no asset reload. */
+    function syncPositionToDNA(pos) {
+        if (!selectedNodePath || !data) return;
+        const node = getNodeAtPath(data, selectedNodePath);
+        if (!node) return;
+        if (!node.transform) node.transform = {};
+        node.transform.pos = [pos[0], pos[1], pos[2]];
+        if (onChange) onChange();
+    }
 
     function buildNode(obj, key, parentObj) {
         const item = document.createElement('div');
@@ -358,6 +411,24 @@ function renderDNATreeInteractive(data, container, onChange) {
             // Branch
             const header = document.createElement('div');
             header.className = 'node-header';
+
+            const nodeId = obj.id;
+            if (nodeId && typeof nodeId === 'string') {
+                header.classList.add('selectable');
+                header.dataset.nodeId = nodeId;
+                header.title = `Select node (show gizmo at origin)`;
+                header.onclick = (e) => {
+                    if (e.target.classList.contains('caret')) return;
+                    e.stopPropagation();
+                    fetch(`/api/assets/${cardId}/dna/nodes`)
+                        .then(r => r.json())
+                        .then(({ nodes }) => {
+                            const n = nodes?.find(x => x.id === nodeId);
+                            selectNode(nodeId, n || null);
+                        })
+                        .catch(() => selectNode(nodeId, null));
+                };
+            }
 
             // Toggle
             const toggle = document.createElement('span');
@@ -456,6 +527,49 @@ function renderDNATreeInteractive(data, container, onChange) {
     }
 
     container.appendChild(buildNode(data, undefined, null));
+
+    // XYZ position section (shown when node selected)
+    const xyzSection = document.createElement('div');
+    xyzSection.className = 'node-xyz-section';
+    xyzSection.style.display = 'none';
+    xyzSection.innerHTML = `
+        <div class="node-xyz-header">Node Position</div>
+        <div class="node-xyz-inputs">
+            <label>X <input type="number" data-xyz="x" step="0.01"></label>
+            <label>Y <input type="number" data-xyz="y" step="0.01"></label>
+            <label>Z <input type="number" data-xyz="z" step="0.01"></label>
+        </div>
+    `;
+    const [xIn, yIn, zIn] = xyzSection.querySelectorAll('input[data-xyz]');
+    [xIn, yIn, zIn].forEach((input, i) => {
+        input.addEventListener('change', () => {
+            const pos = [parseFloat(xIn.value) || 0, parseFloat(yIn.value) || 0, parseFloat(zIn.value) || 0];
+            if (window.gve_wasm?.set_selected_node_pos) {
+                window.gve_wasm.set_selected_node_pos(pos[0], pos[1], pos[2]);
+            }
+            syncPositionToDNA(pos);
+        });
+    });
+    container.appendChild(xyzSection);
+
+    // Wire gizmo drag to update XYZ inputs and sync to DNA
+    window._onGizmoDrag = (pos) => {
+        const [xIn, yIn, zIn] = xyzSection.querySelectorAll('input[data-xyz]');
+        if (pos && pos.length >= 3 && xIn) {
+            xIn.value = pos[0].toFixed(4);
+            yIn.value = pos[1].toFixed(4);
+            zIn.value = pos[2].toFixed(4);
+            syncPositionToDNA(pos);
+        }
+    };
+    window._onGizmoDragEnd = () => {
+        if (window.gve_wasm?.get_selected_node_pos) {
+            const pos = window.gve_wasm.get_selected_node_pos();
+            if (pos && pos.length >= 3) {
+                syncPositionToDNA(pos);
+            }
+        }
+    };
 }
 
 // Public API
@@ -463,3 +577,7 @@ window.ForgeEditors = {
     init: initEditors,
     renderDNA: renderDNATreeInteractive
 };
+
+// Initialize on first page load and after HTMX swaps.
+document.addEventListener('DOMContentLoaded', initEditors);
+document.body.addEventListener('htmx:afterSwap', initEditors);

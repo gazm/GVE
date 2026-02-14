@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Response
 
 from .generate_schemas import (
     GenerateRequestAPI, GenerateJobResponse, GenerateStatusResponse,
@@ -27,11 +27,15 @@ from .generate_schemas import (
     ConceptRequestAPI, ConceptJobResponse, ConceptStatusResponse,
     ConceptApproveRequest, ConceptApproveResponse,
     ConceptRegenerateRequest,
+    RecentConceptItem, RecentConceptsResponse,
+    StageReviewRequest, StageReviewResponse,
 )
 from .generate_tasks import (
     jobs, concept_jobs, stage_previews,
     run_concept_generation, run_generation, run_generation_with_concept,
+    submit_stage_review,
 )
+from ..librarian import list_recent_approved_concepts
 
 router = APIRouter()
 
@@ -58,10 +62,18 @@ async def create_generation(
         "result": None,
         "error": None,
     }
-    
-    background_tasks.add_task(run_generation, job_id, request)
-    
-    print(f"📥 [*] Queued generation job {job_id}: {request.prompt[:50]}...")
+
+    if request.concept_image_base64:
+        background_tasks.add_task(
+            run_generation_with_concept,
+            job_id,
+            request,
+            request.concept_image_base64,
+        )
+        print(f"🖼️ [*] Queued generation job {job_id} with concept image")
+    else:
+        background_tasks.add_task(run_generation, job_id, request)
+        print(f"📥 [*] Queued generation job {job_id}: {request.prompt[:50]}...")
     
     return GenerateJobResponse(job_id=job_id, status="queued")
 
@@ -167,6 +179,16 @@ async def suggest_materials(prompt: str):
     return MaterialSuggestion(materials=unique)
 
 
+@router.get("/concepts/recent", response_model=RecentConceptsResponse)
+async def get_recent_concepts(limit: int = Query(12, ge=1, le=50)):
+    """List recent accepted concept images from MongoDB-backed concept history."""
+    items = await list_recent_approved_concepts(limit=limit)
+    return RecentConceptsResponse(
+        items=[RecentConceptItem(**item) for item in items],
+        count=len(items),
+    )
+
+
 # =============================================================================
 # Stage Preview Endpoints
 # =============================================================================
@@ -194,6 +216,33 @@ async def get_stage_preview(preview_id: str):
             "Content-Disposition": f"inline; filename={preview_id}.gve_bin",
             "Cache-Control": "no-cache",
         }
+    )
+
+
+@router.post("/{job_id}/review", response_model=StageReviewResponse)
+async def submit_stage_review_endpoint(job_id: str, request: StageReviewRequest):
+    """
+    Continue or reject Blacksmith (A1) output.
+    
+    When A1 completes, the UI shows Continue/Reject. This endpoint
+    submits the user's choice. Reject stops the pipeline immediately.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if request.action not in ("continue", "reject"):
+        raise HTTPException(
+            status_code=400,
+            detail='action must be "continue" or "reject"',
+        )
+    if not submit_stage_review(job_id, request.action):
+        raise HTTPException(
+            status_code=400,
+            detail="Job not awaiting A1 review (already resolved or wrong stage)",
+        )
+    return StageReviewResponse(
+        job_id=job_id,
+        action=request.action,
+        status="accepted",
     )
 
 

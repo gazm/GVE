@@ -8,10 +8,18 @@ import * as UI from '/static/js/studio-genai-ui.js';
 let currentConceptJobId = null;
 let currentConceptImage = null;
 let currentPrompt = null;
+let selectedConceptImage = null;
+let selectedConceptKey = null;
+let selectedConceptLabel = null;
+let selectedConceptSource = null;
+let recentBackendConcepts = [];
+let recentSessionConcepts = [];
 
 // State for 3D generation
 let currentGenerationJobId = null;
 let lastLoadedPreviewUrl = null;
+const modelPromptInput = document.getElementById('ai-prompt-model');
+const modelSelector = document.getElementById('model-selector');
 
 // =============================================================================
 // Initialization & Event Wiring
@@ -50,6 +58,14 @@ document.getElementById('btn-submit-regenerate')?.addEventListener('click', () =
 
 document.getElementById('btn-cancel-regenerate')?.addEventListener('click', UI.hideRegenerateDialog);
 
+// Stage review (A1 Blacksmith) - Continue / Reject
+document.getElementById('btn-continue-stage')?.addEventListener('click', () => {
+    if (currentGenerationJobId) submitStageReview(currentGenerationJobId, 'continue');
+});
+document.getElementById('btn-reject-stage')?.addEventListener('click', () => {
+    if (currentGenerationJobId) submitStageReview(currentGenerationJobId, 'reject');
+});
+
 // Type selector
 UI.ui.typeBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -83,10 +99,52 @@ UI.ui.modeBtns.forEach(btn => {
     });
 });
 
+// Optional concept image controls in Model accordion
+UI.ui.modelConceptUpload?.addEventListener('change', async (event) => {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+
+    try {
+        const base64Image = await fileToBase64(file);
+        selectedConceptImage = base64Image;
+        selectedConceptKey = null;
+        selectedConceptSource = 'upload';
+        selectedConceptLabel = `Uploaded: ${file.name}`;
+        UI.showSelectedConceptPreview(base64Image, selectedConceptLabel);
+        UI.logOutput(`🖼️ Selected uploaded concept image: ${file.name}`, 'info');
+        renderRecentConcepts();
+    } catch (err) {
+        UI.logOutput(`❌ Failed to read uploaded image: ${err.message}`, 'error');
+    }
+});
+
+UI.ui.btnClearSelectedConcept?.addEventListener('click', () => {
+    clearSelectedConcept();
+});
+
 // Prompt input - suggest materials
 if (UI.ui.promptInput) {
     UI.ui.promptInput.addEventListener('input', debounce(() => {
         const prompt = UI.ui.promptInput.value.trim();
+        if (prompt.length > 2) {
+            suggestMaterials(prompt);
+            updateCostEstimate();
+        }
+    }, 500));
+}
+
+// Keep concept/model prompt boxes in sync
+if (UI.ui.promptInput && modelPromptInput) {
+    UI.ui.promptInput.addEventListener('input', () => {
+        if (modelPromptInput.value !== UI.ui.promptInput.value) {
+            modelPromptInput.value = UI.ui.promptInput.value;
+        }
+    });
+    modelPromptInput.addEventListener('input', debounce(() => {
+        if (UI.ui.promptInput.value !== modelPromptInput.value) {
+            UI.ui.promptInput.value = modelPromptInput.value;
+        }
+        const prompt = modelPromptInput.value.trim();
         if (prompt.length > 2) {
             suggestMaterials(prompt);
             updateCostEstimate();
@@ -156,6 +214,117 @@ async function updateCostEstimate() {
         console.error('Failed to fetch cost estimate:', err);
         UI.updateCostDisplayError();
     }
+}
+
+function dedupeRecentConcepts(items) {
+    const seen = new Set();
+    const unique = [];
+
+    for (const item of items) {
+        if (!item?.concept_image) continue;
+        const fingerprint = `${item.asset_id || ''}:${item.concept_image.slice(0, 48)}`;
+        if (seen.has(fingerprint)) continue;
+        seen.add(fingerprint);
+        unique.push(item);
+    }
+    return unique;
+}
+
+function getCombinedRecentConcepts() {
+    return dedupeRecentConcepts([...recentSessionConcepts, ...recentBackendConcepts]).slice(0, 18);
+}
+
+function renderRecentConcepts() {
+    UI.renderRecentConceptPickers(getCombinedRecentConcepts(), selectedConceptKey);
+}
+
+async function loadRecentAcceptedConcepts() {
+    try {
+        const response = await fetch('/api/generate/concepts/recent?limit=12');
+        if (!response.ok) {
+            UI.logOutput('⚠️ Failed to load recent accepted concepts', 'warning');
+            return;
+        }
+
+        const data = await response.json();
+        recentBackendConcepts = (data.items || []).map((item, idx) => ({
+            key: `db-${item.asset_id || 'unknown'}-${idx}`,
+            asset_id: item.asset_id || '',
+            prompt: item.prompt || 'Accepted concept',
+            concept_image: item.concept_image,
+            source: 'backend',
+            created_at: item.created_at || null,
+        }));
+        renderRecentConcepts();
+    } catch (err) {
+        UI.logOutput(`⚠️ Could not load recent concepts: ${err.message}`, 'warning');
+    }
+}
+
+function pushSessionConcept(conceptImage, prompt) {
+    if (!conceptImage) return;
+    recentSessionConcepts.unshift({
+        key: `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        asset_id: '',
+        prompt: prompt || currentPrompt || 'Session concept',
+        concept_image: conceptImage,
+        source: 'session',
+        created_at: new Date().toISOString(),
+    });
+    recentSessionConcepts = recentSessionConcepts.slice(0, 8);
+    renderRecentConcepts();
+}
+
+window.selectRecentConcept = function (key) {
+    const selected = getCombinedRecentConcepts().find(item => item.key === key);
+    if (!selected) return;
+
+    selectedConceptImage = selected.concept_image;
+    selectedConceptKey = selected.key;
+    selectedConceptSource = selected.source;
+    selectedConceptLabel = selected.prompt || 'Selected concept';
+
+    UI.showSelectedConceptPreview(selectedConceptImage, selectedConceptLabel);
+    UI.logOutput(`🖼️ Concept selected from ${selectedConceptSource}: "${selectedConceptLabel}"`, 'info');
+    renderRecentConcepts();
+};
+
+function clearSelectedConcept() {
+    selectedConceptImage = null;
+    selectedConceptKey = null;
+    selectedConceptLabel = null;
+    selectedConceptSource = null;
+    if (UI.ui.modelConceptUpload) {
+        UI.ui.modelConceptUpload.value = '';
+    }
+    UI.hideSelectedConceptPreview();
+    renderRecentConcepts();
+}
+
+function resolveConceptImageForGeneration() {
+    if (selectedConceptImage) {
+        return selectedConceptImage;
+    }
+    if (currentConceptImage) {
+        return currentConceptImage;
+    }
+    return null;
+}
+
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = reader.result;
+            if (typeof result !== 'string' || !result.includes(',')) {
+                reject(new Error('Invalid file encoding'));
+                return;
+            }
+            resolve(result.split(',')[1]);
+        };
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+    });
 }
 
 // =============================================================================
@@ -231,6 +400,7 @@ async function pollConceptStatus(jobId) {
             if (data.status === 'ready') {
                 UI.logOutput('✅ Concept image ready! Review and approve to generate 3D.', 'success');
                 currentConceptImage = data.concept_image;
+                pushSessionConcept(data.concept_image, data.prompt || currentPrompt);
                 UI.showConceptPreview(data.concept_image, data.prompt || currentPrompt);
                 resetGenerateButton();
                 return;
@@ -376,15 +546,29 @@ window.generateAssetDirect = async function () {
     UI.updateGenerateButtonState(true, 'direct', '<span class="icon">⏳</span> <span>Generating 3D...</span>');
 
     const category = activeType.charAt(0).toUpperCase() + activeType.slice(1);
+    const conceptImageBase64 = resolveConceptImageForGeneration();
+    const selectedProvider = modelSelector?.value?.trim() || '';
 
     try {
+        const payload = {
+            prompt: fullPrompt,
+            category: category
+        };
+        if (selectedProvider) {
+            payload.ai_provider = selectedProvider;
+            UI.logOutput(`🧠 AI provider: ${selectedProvider}`, 'info');
+        }
+        if (conceptImageBase64) {
+            payload.concept_image_base64 = conceptImageBase64;
+            UI.logOutput('🖼️ Direct generation using concept image reference', 'info');
+        } else {
+            UI.logOutput('ℹ️ Direct generation using prompt-only mode', 'info');
+        }
+
         const response = await fetch('/api/generate/', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                prompt: fullPrompt,
-                category: category
-            })
+            body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
@@ -423,8 +607,9 @@ function listenForGenerationComplete(jobId) {
         if (payload.job_id === jobId) {
             const stageName = payload.stage;
             const previewUrl = payload.preview_url;
+            const awaitingReview = payload.awaiting_review === true;
 
-            if (previewUrl === lastLoadedPreviewUrl) return;
+            if (previewUrl === lastLoadedPreviewUrl && !awaitingReview) return;
             lastLoadedPreviewUrl = previewUrl;
 
             UI.logOutput(`📺 Stage ${stageName} complete, loading preview...`, 'info');
@@ -433,6 +618,13 @@ function listenForGenerationComplete(jobId) {
             if (previewUrl && window.load_asset && window.viewportReady) {
                 if (window.clear_sdf) window.clear_sdf();
                 window.load_asset(previewUrl, `preview_${stageName}`);
+            }
+
+            if (awaitingReview) {
+                UI.showStageReviewActions();
+                UI.logOutput('🔍 Review Blacksmith output. Continue or Reject.', 'info');
+            } else {
+                UI.hideStageReviewActions();
             }
 
             const stages = ['A1', 'A2', 'A3'];
@@ -444,9 +636,10 @@ function listenForGenerationComplete(jobId) {
     };
     addEventListener('generate:stage_complete', stageCompleteHandler);
 
-    // Complete handler
+    // Complete handler - hide review buttons when done
     const completeHandler = (payload) => {
         if (payload.job_id === jobId) {
+            UI.hideStageReviewActions();
             UI.logOutput(`✅ Generation complete! Asset ID: ${payload.asset_id}`, 'success');
             if (payload.result) {
                 UI.logOutput(`   Time: ${payload.result.generation_time_sec?.toFixed(1)}s, Track: ${payload.result.track_used}`, 'info');
@@ -475,6 +668,21 @@ function listenForGenerationComplete(jobId) {
             window.removeEventListener('gve:generate:progress', progressHandler);
             window.removeEventListener('gve:generate:stage_complete', stageCompleteHandler);
             window.removeEventListener('gve:generate:failed', failedHandler);
+            window.removeEventListener('gve:generate:rejected', rejectedHandler);
+        }
+    };
+    const rejectedHandler = (payload) => {
+        if (payload.job_id === jobId) {
+            UI.hideStageReviewActions();
+            UI.logOutput(`🚫 Generation rejected: ${payload.error || 'User rejected Blacksmith output'}`, 'warning');
+            resetGenerateButton();
+            UI.hideStageProgress();
+            currentGenerationJobId = null;
+            window.removeEventListener('gve:generate:complete', completeHandler);
+            window.removeEventListener('gve:generate:progress', progressHandler);
+            window.removeEventListener('gve:generate:stage_complete', stageCompleteHandler);
+            window.removeEventListener('gve:generate:failed', failedHandler);
+            window.removeEventListener('gve:generate:rejected', rejectedHandler);
         }
     };
     addEventListener('generate:complete', completeHandler);
@@ -482,20 +690,45 @@ function listenForGenerationComplete(jobId) {
     // Failed handler
     const failedHandler = (payload) => {
         if (payload.job_id === jobId) {
+            UI.hideStageReviewActions();
             UI.logOutput(`❌ Generation failed: ${payload.error}`, 'error');
             resetGenerateButton();
             UI.hideStageProgress();
             currentGenerationJobId = null;
-
             window.removeEventListener('gve:generate:complete', completeHandler);
             window.removeEventListener('gve:generate:progress', progressHandler);
             window.removeEventListener('gve:generate:stage_complete', stageCompleteHandler);
             window.removeEventListener('gve:generate:failed', failedHandler);
+            window.removeEventListener('gve:generate:rejected', rejectedHandler);
         }
     };
     addEventListener('generate:failed', failedHandler);
+    addEventListener('generate:rejected', rejectedHandler);
 
     UI.updateStageProgress('A1', 'active');
+}
+
+async function submitStageReview(jobId, action) {
+    try {
+        const res = await fetch(`/api/generate/${jobId}/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        if (res.ok) {
+            if (action === 'continue') {
+                UI.logOutput('✅ Continuing to Machinist stage...', 'info');
+            } else {
+                UI.logOutput('🚫 Rejecting generation...', 'info');
+            }
+            UI.hideStageReviewActions();
+        } else {
+            const err = await res.text();
+            UI.logOutput(`❌ Review failed: ${err}`, 'error');
+        }
+    } catch (e) {
+        UI.logOutput(`❌ Review failed: ${e.message}`, 'error');
+    }
 }
 
 // =============================================================================
@@ -570,4 +803,6 @@ window.saveAsset = async function (assetId, btn = null) {
 
 // Initialize cost estimate on load
 updateCostEstimate();
+loadRecentAcceptedConcepts();
+renderRecentConcepts();
 

@@ -103,6 +103,10 @@ export class CameraController {
         let viewCubeDrag = false;
         let dragStartX = 0;
         let dragStartY = 0;
+        let gizmoDrag = false;
+        let gizmoAxis = 0;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
 
         this._handlers.mousedown = (e) => {
             if (e.button === 2) { // Right click (Fly Mode)
@@ -125,6 +129,21 @@ export class CameraController {
                     return;
                 }
 
+                // Check Node Gizmo (before orbit)
+                if (typeof gve_wasm.pick_gizmo === 'function') {
+                    const picked = gve_wasm.pick_gizmo(x, y);
+                    if (picked > 0) {
+                        gizmoDrag = true;
+                        gizmoAxis = picked;
+                        lastMouseX = x;
+                        lastMouseY = y;
+                        if (typeof window._onGizmoDragStart === 'function') {
+                            window._onGizmoDragStart();
+                        }
+                        return;
+                    }
+                }
+
                 // Scene Orbit
                 this.isOrbiting = true;
                 this._updateOrbitFromCamera();
@@ -134,6 +153,13 @@ export class CameraController {
 
         // Mouse Up
         this._handlers.mouseup = (e) => {
+            if (gizmoDrag) {
+                gizmoDrag = false;
+                if (typeof window._onGizmoDragEnd === 'function') {
+                    window._onGizmoDragEnd();
+                }
+                return;
+            }
             if (viewCubeDrag) {
                 const dragDist = Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY);
                 if (dragDist < 5) { // Click
@@ -151,6 +177,21 @@ export class CameraController {
 
         // Mouse Move
         this._handlers.mousemove = (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+            const mouseY = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+
+            if (gizmoDrag && typeof gve_wasm.drag_gizmo === 'function') {
+                gve_wasm.drag_gizmo(mouseX, mouseY, lastMouseX, lastMouseY, gizmoAxis);
+                lastMouseX = mouseX;
+                lastMouseY = mouseY;
+                if (typeof window._onGizmoDrag === 'function') {
+                    const pos = gve_wasm.get_selected_node_pos();
+                    window._onGizmoDrag(pos);
+                }
+                return;
+            }
+
             if (document.pointerLockElement === this.canvas) {
                 // Fly Mode
                 this.camera.yaw -= e.movementX * this.camera.sensitivity;

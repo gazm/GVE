@@ -47,12 +47,12 @@ def bake_sdf(
     extent = b_max - b_min
     res = np.ceil(extent / voxel_size).astype(np.int32)
     
-    # Clamp to avoid OOM
-    MAX_RES = 512
-    if np.any(res > MAX_RES):
-        print(f"    Warning: Resolution {res} exceeds {MAX_RES}. Clamping.", flush=True)
-        scale = MAX_RES / np.max(res)
-        res = (res * scale).astype(np.int32)
+    # Clamp per-axis to WebGPU 3D texture limit (256) and OOM safety (512 total)
+    MAX_AXIS = 256  # WebGPU 3D texture hard limit per dimension
+    if np.any(res > MAX_AXIS):
+        print(f"    Warning: Resolution {res} exceeds {MAX_AXIS}/axis. Clamping.", flush=True)
+        scale = MAX_AXIS / np.max(res)
+        res = np.maximum((res * scale).astype(np.int32), 1)
         voxel_size = float(np.max(extent / res))
     
     print(f"    Grid resolution: {res[0]}x{res[1]}x{res[2]} = {np.prod(res):,} voxels", flush=True)

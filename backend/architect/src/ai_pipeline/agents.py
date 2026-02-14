@@ -8,6 +8,7 @@ Each agent has ONE focused task with constrained JSON output.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from abc import ABC, abstractmethod
@@ -17,11 +18,13 @@ from pathlib import Path
 
 from google import genai
 from google.genai import types
+from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 # Initialize Gemini client on module load
 _api_key = os.environ.get("GEMINI_API_KEY")
 _client = None
+_openai_client = None
 
 def _get_client():
     """Lazy initialization of Gemini client."""
@@ -31,6 +34,17 @@ def _get_client():
             raise RuntimeError("GEMINI_API_KEY environment variable not set")
         _client = genai.Client(api_key=_api_key)
     return _client
+
+
+def _get_openai_client():
+    """Lazy initialization of OpenAI client."""
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY environment variable not set")
+        _openai_client = AsyncOpenAI(api_key=api_key)
+    return _openai_client
 
 
 def clean_json_schema_for_gemini(obj: Any) -> Any:
@@ -49,6 +63,53 @@ def clean_json_schema_for_gemini(obj: Any) -> Any:
         return {k: clean_json_schema_for_gemini(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [clean_json_schema_for_gemini(item) for item in obj]
+    return obj
+
+
+def clean_json_schema_for_openai(obj: Any) -> Any:
+    """Clean JSON schema for OpenAI strict mode.
+
+    Strict mode requires:
+    - ``additionalProperties: false`` on every object (including $defs)
+    - All properties listed in ``required``
+    - No unsupported validation keywords (minItems, maxItems, pattern, etc.)
+    - ``$defs`` and ``$ref`` are supported and kept as-is
+    """
+    # Keywords that OpenAI strict mode does NOT support
+    _UNSUPPORTED = {
+        "title", "default", "examples",
+        "minLength", "maxLength",
+        "minItems", "maxItems",
+        "minimum", "maximum",
+        "exclusiveMinimum", "exclusiveMaximum",
+        "pattern", "format",
+        "uniqueItems",
+    }
+
+    if isinstance(obj, dict):
+        # Strip unsupported keywords
+        obj = {k: v for k, v in obj.items() if k not in _UNSUPPORTED}
+
+        # $ref cannot have sibling keywords — keep only $ref itself
+        if "$ref" in obj:
+            return {"$ref": obj["$ref"]}
+
+        # Every object type needs additionalProperties: false + full required
+        if obj.get("type") == "object":
+            obj["additionalProperties"] = False
+            props = obj.get("properties")
+            if props and isinstance(props, dict):
+                obj["required"] = list(props.keys())
+            else:
+                obj["properties"] = {}
+                obj["required"] = []
+
+        # Recurse into everything (including $defs, anyOf, items, properties)
+        return {k: clean_json_schema_for_openai(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [clean_json_schema_for_openai(item) for item in obj]
+
     return obj
 
 
@@ -83,6 +144,7 @@ class BaseAgent(ABC, Generic[T]):
     
     def __init__(self) -> None:
         self._client = _get_client()
+        self._openai_client = None
     
     @abstractmethod
     def get_system_prompt(self) -> str:
@@ -147,6 +209,24 @@ class BaseAgent(ABC, Generic[T]):
                         "type": "primitive",
                         "shape": "cylinder",
                         "params": {"radius": 0.1, "height": 0.3}
+                    },
+                    "lod_cutoff": 1
+                }
+            elif "add" in loc_str and "add_operations" not in loc_str:
+                # Machinist-specific: add field (for hardware) must be a dict, not a string
+                error_messages.append(
+                    f"❌ {field_path}: The 'add' field MUST be a dictionary/object when op is 'add'.\n"
+                    f"   Got: {type(input_value).__name__} = {repr(input_value)[:100]}\n"
+                    f"   Expected: {{\"type\": \"primitive\", \"shape\": \"cylinder\", \"params\": {{...}}, \"transform\": {{...}}}}"
+                )
+                example_fix = {
+                    "op": "add",
+                    "target_node_id": "frame_001",
+                    "add": {
+                        "type": "primitive",
+                        "shape": "cylinder",
+                        "params": {"radius": 0.004, "height": 0.003, "sides": 6},
+                        "transform": {"pos": [0.02, 0.05, 0.01]}
                     },
                     "lod_cutoff": 1
                 }
@@ -232,14 +312,40 @@ class BaseAgent(ABC, Generic[T]):
                     "{rag_context.blacksmith_guidance}",
                     context.rag_context.get("blacksmith_guidance", ""),
                 )
+            if "{rag_context.machinist_guidance}" in system:
+                system = system.replace(
+                    "{rag_context.machinist_guidance}",
+                    context.rag_context.get("machinist_guidance", ""),
+                )
+            if "{rag_context.artist_guidance}" in system:
+                system = system.replace(
+                    "{rag_context.artist_guidance}",
+                    context.rag_context.get("artist_guidance", ""),
+                )
+            if "{rag_context.spatial_guidance}" in system:
+                system = system.replace(
+                    "{rag_context.spatial_guidance}",
+                    context.rag_context.get("spatial_guidance", ""),
+                )
         
         # Inject previous stage outputs
         for stage_name, output in context.previous_outputs.items():
-            if stage_name == "a1_part":
-                continue  # Handled below for per-part Machinist context
+            if stage_name in ("a1_part", "a1_connections"):
+                continue  # Handled below
             placeholder = f"{{stage_{stage_name}_json}}"
             if placeholder in system:
                 system = system.replace(placeholder, json.dumps(output, indent=2))
+
+        # Inject A1 connections (for Machinist - connection logic)
+        a1_conn = context.previous_outputs.get("a1_connections")
+        if a1_conn is None and "a1" in context.previous_outputs:
+            a1 = context.previous_outputs["a1"]
+            a1_conn = a1.get("connections", []) if isinstance(a1, dict) else []
+        if "{stage_a1_connections}" in system:
+            system = system.replace(
+                "{stage_a1_connections}",
+                json.dumps(a1_conn if a1_conn else [], indent=2),
+            )
         
         # Inject per-part Machinist context (a1_part: {"part_id": str, "part": dict})
         a1_part = context.previous_outputs.get("a1_part")
@@ -264,6 +370,63 @@ class BaseAgent(ABC, Generic[T]):
             system = system.replace("{user_style_token}", context.style_token)
         
         return system, context.user_prompt
+
+    def _is_openai_model(self) -> bool:
+        return self.model_name.startswith("gpt-") or self.model_name.startswith("o")
+
+    def _gemini_model(self) -> str:
+        """Model ID to use for Gemini API (fallback when agent is configured for OpenAI)."""
+        return getattr(self, "gemini_model_name", "gemini-3-pro-preview")
+
+    def _model_for_gemini(self) -> str:
+        """Model to pass to Gemini client: use Gemini ID when agent is OpenAI-configured."""
+        return self._gemini_model() if self._is_openai_model() else self.model_name
+
+    async def _generate_openai(
+        self,
+        system_instruction: str,
+        user_prompt: str,
+        schema: type[T],
+        image_path: Path | None = None,
+    ) -> T:
+        json_schema = schema.model_json_schema()
+        # Clean schema for OpenAI strict mode (additionalProperties: false, all required)
+        cleaned = clean_json_schema_for_openai(json_schema)
+
+        if image_path:
+            image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+            image_url = f"data:image/jpeg;base64,{image_b64}"
+            user_content = [
+                {"type": "input_text", "text": user_prompt},
+                {"type": "input_image", "image_url": image_url},
+            ]
+        else:
+            user_content = [{"type": "input_text", "text": user_prompt}]
+
+        client = _get_openai_client()
+        schema_name = f"{self.name}_response"
+        print(f"  [{self.name}] 📋 OpenAI schema '{schema_name}': "
+              f"{len(cleaned.get('$defs', {}))} $defs, "
+              f"{len(cleaned.get('properties', {}))} top-level props")
+        response = await client.responses.create(
+            model=self.model_name,
+            instructions=system_instruction,
+            input=[{"role": "user", "content": user_content}],
+            temperature=self.temperature,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": schema_name,
+                    "schema": cleaned,
+                    "strict": True,
+                }
+            },
+        )
+
+        json_text = response.output_text
+        print(f"  [{self.name}] 📝 OpenAI response: {len(json_text)} chars")
+        data = json.loads(json_text)
+        return schema.model_validate(data)
     
     async def generate(self, context: AgentContext) -> T:
         """
@@ -279,7 +442,18 @@ class BaseAgent(ABC, Generic[T]):
         for attempt in range(self.max_retries):
             try:
                 print(f"  [{self.name}] Attempt {attempt + 1}/{self.max_retries} - Preparing schema...")
-                
+                if self._is_openai_model():
+                    print(f"  [{self.name}] 🔁 Using OpenAI (model: {self.model_name})...")
+                    try:
+                        result = await asyncio.wait_for(
+                            self._generate_openai(system_instruction, user_prompt, schema),
+                            timeout=120.0,
+                        )
+                        print(f"✅ {self.name} completed (attempt {attempt + 1})")
+                        return result
+                    except Exception as openai_error:
+                        print(f"  [{self.name}] ⚠️ OpenAI failed, falling back to Gemini: {openai_error}")
+
                 # Convert Pydantic model to JSON schema dict
                 # Gemini API requires dict format, not Pydantic model
                 json_schema = schema.model_json_schema()
@@ -313,13 +487,13 @@ class BaseAgent(ABC, Generic[T]):
                     import logging
                     logging.debug(f"[{self.name}] Cleaned JSON schema: {json.dumps(json_schema, indent=2)[:500]}...")
                 
-                print(f"  [{self.name}] Calling Gemini API (model: {self.model_name})...")
+                print(f"  [{self.name}] Calling Gemini API (model: {self._model_for_gemini()})...")
                 
                 # Use async client from google-genai with timeout
                 try:
                     response = await asyncio.wait_for(
                         self._client.aio.models.generate_content(
-                            model=self.model_name,
+                            model=self._model_for_gemini(),
                             contents=user_prompt,
                             config=types.GenerateContentConfig(
                                 system_instruction=system_instruction,
@@ -388,8 +562,9 @@ class BaseAgent(ABC, Generic[T]):
 
 class GeminiVisionAgent(BaseAgent[T]):
     """Agent that can process images using Gemini's vision capabilities."""
-    
+
     model_name: str = "gemini-3-pro-preview"  # Supports vision and better structured output
+    gemini_model_name: str = "gemini-3-pro-preview"  # Used when falling back from OpenAI to Gemini
     
     async def generate_with_image(
         self, 
@@ -409,7 +584,18 @@ class GeminiVisionAgent(BaseAgent[T]):
         for attempt in range(self.max_retries):
             try:
                 print(f"  [{self.name}] Vision attempt {attempt + 1}/{self.max_retries}...")
-                
+                if self._is_openai_model():
+                    print(f"  [{self.name}] 🔁 Using OpenAI Vision (model: {self.model_name})...")
+                    try:
+                        result = await asyncio.wait_for(
+                            self._generate_openai(system_instruction, user_prompt, schema, image_path=image_path),
+                            timeout=120.0,
+                        )
+                        print(f"✅ {self.name} (vision) completed (attempt {attempt + 1})")
+                        return result
+                    except Exception as openai_error:
+                        print(f"  [{self.name}] ⚠️ OpenAI Vision failed, falling back to Gemini: {openai_error}")
+
                 # Convert Pydantic model to JSON schema dict
                 json_schema = schema.model_json_schema()
                 
@@ -429,7 +615,7 @@ class GeminiVisionAgent(BaseAgent[T]):
                 # Use Part.from_bytes for image input
                 response = await asyncio.wait_for(
                     self._client.aio.models.generate_content(
-                        model=self.model_name,
+                        model=self._model_for_gemini(),
                         contents=[
                             current_prompt,
                             types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),

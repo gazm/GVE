@@ -228,9 +228,8 @@ pub const VOLUME_SHADER: &str = concat!(
     r#"
 struct RuntimeVolumeOp {
     op_type: u32,
-    _pad0_x: u32,
-    _pad0_y: u32,
-    _pad0_z: u32,
+    bone_idx_pad: u32,
+    _pad0_rest: vec2<u32>,
     pos: vec3<f32>,
     _pad1: u32,
     params_a: vec4<f32>,
@@ -326,14 +325,9 @@ fn apply_op(d_in: f32, p: vec3<f32>, op: RuntimeVolumeOp) -> f32 {
 // ── Volume Sampling ─────────────────────────────────────────────────────
 
 // Sample SDF from 3D texture (world position -> distance).
-// Space: hit_pos, bounds_min, triplanar_bounds all share same world space (no model matrix).
 fn sample_sdf(world_pos: vec3<f32>) -> f32 {
-    // Transform world position to UV [0,1] coordinates
     let uv = (world_pos - uniforms.bounds_min) / (uniforms.bounds_max - uniforms.bounds_min);
-    
-    // Clamp to valid range
     let uv_clamped = clamp(uv, vec3<f32>(0.001), vec3<f32>(0.999));
-    
     var d = textureSampleLevel(volume_texture, volume_sampler, uv_clamped, 0.0).r;
 
     // Apply runtime operations

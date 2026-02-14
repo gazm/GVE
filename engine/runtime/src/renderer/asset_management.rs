@@ -193,7 +193,9 @@ impl Renderer {
 
             let op = crate::renderer::types::RuntimeVolumeOp {
                 op_type,
-                _pad0: [0; 3],
+                bone_idx: crate::renderer::types::BONE_IDX_NONE,
+                _pad0: [0],
+                _pad0_rest: [0; 2],
                 pos,
                 _pad1: 0,
                 params,

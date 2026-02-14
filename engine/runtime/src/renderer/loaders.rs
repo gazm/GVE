@@ -8,7 +8,7 @@ use wgpu::util::DeviceExt;
 use shared::ShellVertex;
 use shared::binary_format::{GVE3Header, ChunkHeader, GVE3_MAGIC, chunk_id, align_to_16};
 
-use crate::renderer::types::{LoadedMesh, LoadedSplat, LoadedVolume};
+use crate::renderer::types::{LoadedMesh, LoadedSplat, LoadedVolume, SkeletonData, BoneRestPose, NodeBinding};
 
 // ============================================================================
 // Binary Parsing Constants
@@ -99,18 +99,29 @@ pub fn load_geometry_from_binary(
         Vec::new()
     };
 
+    // Parse SKEL chunk if present
+    let skel_result = chunks
+        .iter()
+        .find(|(cc, _, _)| *cc == chunk_id::SKEL)
+        .and_then(|(_, offset, size)| parse_skel_chunk(data, *offset, *size));
+    let (skeleton, node_bindings) = match skel_result {
+        Some((s, b)) => (Some(s), b),
+        None => (None, Vec::new()),
+    };
+
     // Process chunks
     for (fourcc, offset, size) in &chunks {
         if *fourcc == chunk_id::VOLM {
-            if let Some(mut vol) = parse_dense_volume(
+                if let Some(mut vol) = parse_dense_volume(
                 device, queue, data,
                 *offset, *size,
                 triplanar_global_offset,
                 volume_bind_group_layout,
                 volume_uniform_buffer,
             ) {
-                // Attach parsed runtime patches
                 vol.patches = patches.clone();
+                vol.skeleton = skeleton.clone();
+                vol.node_bindings = node_bindings.clone();
                 
                 log::info!("\u{2705} Loaded dense volume: {}x{}x{} (triplanar: {}, patches: {})",
                     vol.dims[0], vol.dims[1], vol.dims[2], vol.has_triplanar, vol.patches.len());
@@ -132,8 +143,10 @@ pub fn load_geometry_from_binary(
                 }
             }
         } else if *fourcc == chunk_id::ROPS {
-            // Handled above
             log::info!("\u{2705} Loaded Runtime Ops: {}", patches.len());
+        } else if *fourcc == chunk_id::SKEL {
+            let nb = skeleton.as_ref().map(|s| s.bones.len()).unwrap_or(0);
+            log::info!("\u{2705} Loaded Skeleton: {} bones, {} bindings", nb, node_bindings.len());
         } else {
             // TRIP consumed via triplanar_global_offset, ROPS/META handled
             if *fourcc != chunk_id::TRIP {
@@ -169,6 +182,84 @@ pub enum GeometryLoadError {
 // ============================================================================
 // Runtime Ops Parsing
 // ============================================================================
+
+/// Parse SKEL chunk: bones + node bindings.
+/// Returns (SkeletonData, Vec<NodeBinding>) or None on parse error.
+fn parse_skel_chunk(data: &[u8], offset: usize, size: usize) -> Option<(SkeletonData, Vec<NodeBinding>)> {
+    let mut cursor = offset;
+    if cursor + 2 > offset + size {
+        return None;
+    }
+    let bone_count = u16::from_le_bytes([data[cursor], data[cursor + 1]]) as usize;
+    cursor += 2;
+    const BONE_SIZE: usize = 2 + 12 + 16; // parent_idx(u16) + rest_pos(12) + rest_rot(16)
+    if cursor + bone_count * BONE_SIZE > offset + size {
+        log::warn!("SKEL: bone data truncated");
+        return None;
+    }
+    let mut bones = Vec::with_capacity(bone_count);
+    for _ in 0..bone_count {
+        let parent_idx = u16::from_le_bytes([data[cursor], data[cursor + 1]]);
+        cursor += 2;
+        let rest_pos = [
+            f32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?),
+            f32::from_le_bytes(data[cursor + 4..cursor + 8].try_into().ok()?),
+            f32::from_le_bytes(data[cursor + 8..cursor + 12].try_into().ok()?),
+        ];
+        cursor += 12;
+        let rest_rot = [
+            f32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?),
+            f32::from_le_bytes(data[cursor + 4..cursor + 8].try_into().ok()?),
+            f32::from_le_bytes(data[cursor + 8..cursor + 12].try_into().ok()?),
+            f32::from_le_bytes(data[cursor + 12..cursor + 16].try_into().ok()?),
+        ];
+        cursor += 16;
+        bones.push(BoneRestPose { parent_idx, rest_pos, rest_rot });
+    }
+    if cursor + 4 > offset + size {
+        return Some((SkeletonData { bones }, Vec::new()));
+    }
+    let mapping_count = u32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?) as usize;
+    cursor += 4;
+    let mut bindings = Vec::with_capacity(mapping_count);
+    for _ in 0..mapping_count {
+        if cursor + 8 > offset + size {
+            break;
+        }
+        let kind = data[cursor];
+        let node_id = u32::from_le_bytes(data[cursor + 1..cursor + 5].try_into().ok()?);
+        cursor += 5;
+        if kind == 0 {
+            if cursor + 3 > offset + size {
+                break;
+            }
+            let bone_idx = u16::from_le_bytes([data[cursor], data[cursor + 1]]);
+            cursor += 3;
+            bindings.push(NodeBinding::Rigid { node_id, bone_idx });
+        } else {
+            if cursor + 3 > offset + size {
+                break;
+            }
+            let n = data[cursor] as usize;
+            cursor += 3;
+            if n > 8 || cursor + n * (2 + 4) > offset + size {
+                break;
+            }
+            let mut bone_indices = Vec::with_capacity(n);
+            let mut weights = Vec::with_capacity(n);
+            for _ in 0..n {
+                bone_indices.push(u16::from_le_bytes([data[cursor], data[cursor + 1]]));
+                cursor += 2;
+            }
+            for _ in 0..n {
+                weights.push(f32::from_le_bytes(data[cursor..cursor + 4].try_into().ok()?));
+                cursor += 4;
+            }
+            bindings.push(NodeBinding::Skinned { node_id, bone_indices, weights });
+        }
+    }
+    Some((SkeletonData { bones }, bindings))
+}
 
 fn parse_runtime_ops(data: &[u8], offset: usize, size: usize) -> Option<Vec<crate::renderer::types::RuntimeVolumeOp>> {
     let op_size = std::mem::size_of::<crate::renderer::types::RuntimeVolumeOp>();
@@ -516,6 +607,8 @@ fn parse_dense_volume(
         triplanar_bounds_min: tri_bounds_min,
         triplanar_bounds_max: tri_bounds_max,
         patches: Vec::new(),
+        skeleton: None,
+        node_bindings: Vec::new(),
     })
 }
 

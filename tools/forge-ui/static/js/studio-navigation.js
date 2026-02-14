@@ -205,6 +205,9 @@ window.addToProject = window.addToChain;
 
 // Select an asset in the tree (UI highlight) and ensure editor is visible
 window.selectCard = function (assetId) {
+    // Clear node gizmo when switching cards (selection is per-asset)
+    if (window.clear_node_selection) window.clear_node_selection();
+
     // Remove active class from all items
     document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active'));
 

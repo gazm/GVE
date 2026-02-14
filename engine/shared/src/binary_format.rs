@@ -215,6 +215,7 @@ pub mod chunk_id {
     pub const TRIP: [u8; 4] = *b"TRIP";
     pub const ROPS: [u8; 4] = *b"ROPS";
     pub const META: [u8; 4] = *b"META";
+    pub const SKEL: [u8; 4] = *b"SKEL";
 }
 
 /// Helper to calculate padding needed for 16-byte alignment
